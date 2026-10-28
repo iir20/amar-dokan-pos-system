@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: amar-dokan-pos
+    runtime: node
+    plan: free
+    region: singapore
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/global-config
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: DATABASE_URL
+        fromDatabase:
+          name: amar-dokan-pos-db
+          property: connectionString
+
+databases:
+  - name: amar-dokan-pos-db
+    plan: free
+    region: singapore
+    postgresMajorVersion: 16
