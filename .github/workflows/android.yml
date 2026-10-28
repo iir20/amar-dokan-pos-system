@@ -1,0 +1,122 @@
+# Phase 2 — Android release build (signed APK + AAB) on main-branch tags.
+#
+# Trigger: pushing a tag like v1.2.0 (tags are the release gate; every push
+# to main still runs CI in ci.yml first). The workflow FAILS CLOSED when
+# signing secrets are missing — it never signs with a debug key and never
+# uploads an unsigned "release" artifact as if it were signed.
+#
+# Required GitHub Secrets (repo Settings > Secrets and variables > Actions):
+#   ANDROID_KEYSTORE_BASE64  — base64 of the upload keystore (.jks), created
+#                              ONCE by the owner with keytool (see docs/android.md).
+#   ANDROID_KEYSTORE_PASSWORD
+#   ANDROID_KEY_ALIAS
+#   ANDROID_KEY_PASSWORD
+# No secret value is ever echoed, committed, or baked into the app.
+# The keystore file is written to a temp path inside the runner only and
+# is gone when the job ends.
+
+name: Android Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch: {}
+
+jobs:
+  android-release:
+    name: Signed APK + AAB
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository (tag)
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        # bun.lock is the lockfile (there is no package-lock.json, so
+        # `npm ci` cannot work here); bun install is the supported route.
+        run: bun install
+
+      - name: Type-check
+        run: npx tsc --noEmit
+
+      - name: Run unit tests
+        run: npm test
+
+      - name: Build Capacitor web assets (no PWA service worker)
+        # CAPACITOR_BUILD=true omits the Workbox SW from dist so the native
+        # shell's offline story is AmarSync alone (see capacitor.config.ts).
+        run: CAPACITOR_BUILD=true npm run build
+
+      - name: Sync Capacitor Android project
+        run: npx cap sync android
+
+      - name: Check signing secrets are present (fail closed)
+        run: |
+          for secret_name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+            if [ -z "${!secret_name}" ]; then
+              echo "::error::$secret_name secret is not set. See docs/android.md 'Keystore setup checklist'."
+              exit 1
+            fi
+          done
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Write keystore + keystore.properties (runner temp only)
+        run: |
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > /tmp/amar-dokan-release.keystore
+          cat > android/keystore.properties <<EOF
+          storeFile=/tmp/amar-dokan-release.keystore
+          storePassword=$ANDROID_KEYSTORE_PASSWORD
+          keyAlias=$ANDROID_KEY_ALIAS
+          keyPassword=$ANDROID_KEY_PASSWORD
+          EOF
+          # Gradle reads keystore.properties from the android/ project root
+          # (see android/app/build.gradle); it is gitignored and never
+          # committed, and the keystore itself lives only in /tmp.
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+
+      - name: Build signed APK + AAB
+        run: |
+          cd android
+          ./gradlew assembleRelease bundleRelease --no-daemon
+
+      - name: Upload APK + AAB artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-release-${{ github.ref_name }}
+          path: |
+            android/app/build/outputs/apk/release/*.apk
+            android/app/build/outputs/bundle/release/*.aab
+          retention-days: 90
+
+      - name: Attach APK + AAB to the tag release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            android/app/build/outputs/apk/release/*.apk
+            android/app/build/outputs/bundle/release/*.aab

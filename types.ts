@@ -1,4 +1,3 @@
-
 export type StoreCategory = 'grocery' | 'medicine' | 'clothing' | 'electronics' | 'restaurant' | 'other';
 
 export interface Product {
@@ -14,18 +13,18 @@ export interface Product {
   image?: string;
   barcode?: string;
   supplier?: string;
-  
+
   // Smart Inventory Fields (Conditional based on Category)
-  
+
   // Medicine Specific
-  expiryDate?: string; 
+  expiryDate?: string;
   batchNumber?: string;
   genericName?: string; // New: For medicines (e.g., Paracetamol)
-  
+
   // Clothing Specific
-  color?: string; 
-  size?: string; 
-  style?: string; 
+  color?: string;
+  size?: string;
+  style?: string;
   brand?: string; // New: For clothing/electronics
 
   // Electronics Specific
@@ -62,6 +61,15 @@ export interface Sale {
   dueAmount: number;
   storeName?: string;
   servedBy?: string; // Name of staff who processed
+  branchId?: string | null;
+  counterId?: string | null;
+  couponCode?: string | null;
+  loyaltyRedeemed?: number;
+  loyaltyEarned?: number;
+  /** Phase 3 request field: points the customer asks to redeem. The
+   * server validates the balance and caps the discount; the client
+   * never supplies a discount amount for loyalty. */
+  loyaltyPointsRedeem?: number;
 }
 
 // Restaurant System Types
@@ -114,11 +122,11 @@ export type GlobalPricingConfig = Record<StoreCategory, CategoryPricing>;
 
 export interface SubscriptionRequest {
   id: string;
-  userId: string; 
+  userId: string;
   username: string;
   storeName: string;
   storeCategory: StoreCategory;
-  ownerName: string; 
+  ownerName: string;
   package: SubscriptionPackage;
   amount: number;
   paymentNumber: string;
@@ -128,20 +136,20 @@ export interface SubscriptionRequest {
 }
 
 export interface User {
-  id: string; 
+  id: string;
   storeName: string;
-  storeCategory: StoreCategory; 
+  storeCategory: StoreCategory;
   username: string;
-  pin: string; 
+  pin: string;
   address?: string;
   phone?: string;
   // Location Fields
   zila?: string;
   upozila?: string;
   thana?: string;
-  
+
   plan: PlanType;
-  defaultVatRate?: number; 
+  defaultVatRate?: number;
   subscriptionExpiry?: string;
   subscriptionStatus?: 'active' | 'expired' | 'pending_approval';
   profilePicture?: string; // Base64
@@ -197,27 +205,27 @@ export interface PricingSetting {
 
 // New: Global Config for Logo/Chat
 export interface GlobalConfig {
-    logo?: string; // Base64
-    whatsappNumber?: string;
+  logo?: string; // Base64
+  whatsappNumber?: string;
 }
 
 export interface GlobalConfigSetting {
-    key: string;
-    value: GlobalConfig;
+  key: string;
+  value: GlobalConfig;
 }
 
 export type SystemSetting = PaymentSettings | PricingSetting | GlobalConfigSetting;
 
 // New: Announcement System
 export interface Announcement {
-    id: string;
-    title: string;
-    message: string;
-    target: 'all' | string[]; // 'all' or array of store IDs
-    startDate: string;
-    endDate: string;
-    isActive: boolean;
-    createdAt: string;
+  id: string;
+  title: string;
+  message: string;
+  target: 'all' | string[]; // 'all' or array of store IDs
+  startDate: string;
+  endDate: string;
+  isActive: boolean;
+  createdAt: string;
 }
 
 // --- Marketplace: Customer & Online Delivery Orders ---
@@ -417,4 +425,141 @@ export interface Translation {
   vsYesterday: string;
   performance: string;
   totalQuantity: string;
+  // Phase 3 (Depth)
+  depthPanel: string;
+  forecast: string;
+  forecastBasis: string;
+  expiryAlerts: string;
+  deadStock: string;
+  suppliers: string;
+  purchaseOrders: string;
+  branches: string;
+  counters: string;
+  loyalty: string;
+  coupons: string;
+  voicePos: string;
+  accountantExports: string;
+  supplierDues: string;
+  goodsReceived: string;
+  zReportPerCounter: string;
+  speakTotal: string;
+  voiceInput: string;
+  voiceUnsupported: string;
+  suggestedOrder: string;
+  createDraftOrder: string;
+}
+
+export interface PaymentIntent {
+  id: string;
+  storeId: string;
+  orderType: 'sale' | 'restaurant' | 'marketplace' | 'subscription';
+  orderId: string;
+  method: 'cash' | 'bkash' | 'nagad' | 'card' | 'split';
+  amount: number;
+  paidAmount: number;
+  changeAmount: number;
+  status: 'pending' | 'authorized' | 'captured' | 'refunded' | 'voided';
+  gatewayTrxId?: string | null;
+  voidReason?: string | null;
+  details?: any;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// --- Phase 3 (Depth) ---
+export interface Branch {
+  id: string;
+  storeId: string;
+  name: string;
+  address?: string | null;
+  isDefault?: boolean;
+  createdAt?: string;
+}
+
+export interface Counter {
+  id: string;
+  storeId: string;
+  branchId: string;
+  name: string;
+  createdAt?: string;
+}
+
+export interface Supplier {
+  id: string;
+  storeId: string;
+  name: string;
+  phone?: string | null;
+  address?: string | null;
+  notes?: string | null;
+  totalDue: number;
+  createdAt?: string;
+}
+
+export interface PurchaseOrderItem {
+  productId: string;
+  productName?: string;
+  quantity: number;
+  cost: number;
+  receivedQty?: number;
+}
+
+export interface PurchaseOrder {
+  id: string;
+  storeId: string;
+  supplierId: string;
+  branchId?: string | null;
+  status: 'draft' | 'partial' | 'received' | 'cancelled';
+  items: PurchaseOrderItem[];
+  totalCost: number;
+  createdAt?: string;
+  receivedAt?: string | null;
+}
+
+export interface Coupon {
+  id: string;
+  storeId: string;
+  code: string;
+  type: 'percent' | 'fixed';
+  value: number;
+  minPurchase: number;
+  maxUses: number;
+  usedCount: number;
+  expiresAt?: string | null;
+  active: boolean;
+}
+
+export interface LoyaltyAccount {
+  phone: string;
+  storeId: string;
+  name?: string | null;
+  points: number;
+}
+
+export interface Shift {
+  id: string;
+  storeId: string;
+  branchId?: string | null;
+  counterId?: string | null;
+  cashierId: string;
+  cashierName: string;
+  openedAt: string;
+  closedAt?: string | null;
+  openingCash: number;
+  totalCashSales: number;
+  totalDigitalSales: number;
+  totalExpenses: number;
+  expectedCash: number;
+  actualCash?: number | null;
+  discrepancy: number;
+  status: 'open' | 'closed';
+  notes?: string | null;
+}
+
+export interface SyncItem {
+  id: string;
+  sale: any;
+  queuedAt: string;
+  status: 'pending' | 'synced' | 'failed';
+  retryCount: number;
+  error?: string;
 }

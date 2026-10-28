@@ -1,0 +1,234 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Phase 5 — design tokens (single source of truth; values mirror
+   design/tokens.ts, which unit tests measure for WCAG contrast). */
+:root,
+html[data-theme='light'] {
+  --ad-bg: #f8fafc;
+  --ad-surface: #ffffff;
+  --ad-surface-alt: #f1f5f9;
+  --ad-text: #111827;
+  --ad-text-muted: #4b5563;
+  --ad-border: #e5e7eb;
+  --ad-primary-bg: #047857;
+  --ad-primary-text: #ffffff;
+  --ad-danger-bg: #b91c1c;
+  --ad-danger-text: #ffffff;
+  --ad-success-bg: #047857;
+  --ad-success-text: #ffffff;
+  --ad-warning-bg: #92400e;
+  --ad-warning-text: #ffffff;
+}
+
+html[data-theme='dark'] {
+  --ad-bg: #0f172a;
+  --ad-surface: #1e293b;
+  --ad-surface-alt: #334155;
+  --ad-text: #f8fafc;
+  --ad-text-muted: #cbd5e1;
+  --ad-border: #334155;
+  --ad-primary-bg: #34d399;
+  --ad-primary-text: #052e16;
+  --ad-danger-bg: #fca5a5;
+  --ad-danger-text: #450a0a;
+  --ad-success-bg: #34d399;
+  --ad-success-text: #052e16;
+  --ad-warning-bg: #fcd34d;
+  --ad-warning-text: #451a03;
+}
+
+html[data-theme='high-contrast'] {
+  --ad-bg: #000000;
+  --ad-surface: #000000;
+  --ad-surface-alt: #111111;
+  --ad-text: #ffffff;
+  --ad-text-muted: #ffff00;
+  --ad-border: #ffffff;
+  --ad-primary-bg: #ffff00;
+  --ad-primary-text: #000000;
+  --ad-danger-bg: #b91c1c;
+  --ad-danger-text: #ffffff;
+  --ad-success-bg: #00ff00;
+  --ad-success-text: #000000;
+  --ad-warning-bg: #ffff00;
+  --ad-warning-text: #000000;
+}
+
+/* Font scaling: root font-size is set inline by services/theme.ts
+   (14/16/18/20px); Tailwind rem utilities scale with it. */
+html[data-font-scale='small'] {
+  font-size: 14px;
+}
+html[data-font-scale='normal'] {
+  font-size: 16px;
+}
+html[data-font-scale='large'] {
+  font-size: 18px;
+}
+html[data-font-scale='xlarge'] {
+  font-size: 20px;
+}
+
+/* Dark / high-contrast follow-through for the app's most common
+   hardcoded utilities, so themed screens stay readable. Light mode is
+   untouched (these rules only apply under a data-theme). */
+html[data-theme='dark'] .bg-white {
+  background-color: var(--ad-surface);
+}
+html[data-theme='dark'] .bg-slate-50,
+html[data-theme='dark'] .bg-gray-50 {
+  background-color: var(--ad-bg);
+}
+html[data-theme='dark'] .bg-gray-100 {
+  background-color: var(--ad-surface-alt);
+}
+html[data-theme='dark'] .text-gray-900,
+html[data-theme='dark'] .text-gray-800 {
+  color: var(--ad-text);
+}
+html[data-theme='dark'] .text-gray-600,
+html[data-theme='dark'] .text-gray-500 {
+  color: var(--ad-text-muted);
+}
+html[data-theme='dark'] .border-gray-100,
+html[data-theme='dark'] .border-gray-200 {
+  border-color: var(--ad-border);
+}
+
+html[data-theme='high-contrast'] .bg-white {
+  background-color: #000000;
+}
+html[data-theme='high-contrast'] .bg-slate-50,
+html[data-theme='high-contrast'] .bg-gray-50,
+html[data-theme='high-contrast'] .bg-gray-100 {
+  background-color: #000000;
+}
+html[data-theme='high-contrast'] .text-gray-900,
+html[data-theme='high-contrast'] .text-gray-800 {
+  color: #ffffff;
+}
+html[data-theme='high-contrast'] .text-gray-600,
+html[data-theme='high-contrast'] .text-gray-500 {
+  color: #ffff00;
+}
+html[data-theme='high-contrast'] .border-gray-100,
+html[data-theme='high-contrast'] .border-gray-200 {
+  border-color: #ffffff;
+}
+html[data-theme='high-contrast'] .bg-emerald-600 {
+  background-color: #ffff00;
+  color: #000000;
+}
+
+/* Shared Phase 5 component classes (components/ui.tsx). */
+.ad-card {
+  background-color: var(--ad-surface);
+  color: var(--ad-text);
+  border: 1px solid var(--ad-border);
+  border-radius: 12px;
+}
+.ad-btn {
+  min-height: 48px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 16px;
+  border-radius: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.ad-btn-primary {
+  background-color: var(--ad-primary-bg);
+  color: var(--ad-primary-text);
+}
+.ad-btn-danger {
+  background-color: var(--ad-danger-bg);
+  color: var(--ad-danger-text);
+}
+.ad-btn-ghost {
+  background-color: var(--ad-surface-alt);
+  color: var(--ad-text);
+  border: 1px solid var(--ad-border);
+}
+.ad-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.ad-input {
+  background-color: var(--ad-surface);
+  color: var(--ad-text);
+  border: 1px solid var(--ad-border);
+  border-radius: 12px;
+  min-height: 48px;
+  padding: 0 12px;
+  width: 100%;
+}
+/* Primary actions: minimum 48px tap target (measured, Phase 5). */
+.ad-tap {
+  min-height: 48px;
+  min-width: 48px;
+}
+
+/* Animated sync states — the pill visibly animates, not just re-labels. */
+@keyframes ad-sync-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes ad-sync-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+.ad-sync-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 9999px;
+}
+.ad-sync-dot--syncing {
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  animation: ad-sync-spin 0.8s linear infinite;
+}
+.ad-sync-dot--pending {
+  background-color: currentColor;
+  animation: ad-sync-pulse 1.2s ease-in-out infinite;
+}
+.ad-sync-dot--synced {
+  background-color: currentColor;
+}
+
+@layer utilities {
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}
+
+/* Printed receipts always print black-on-white, whatever the theme. */
+@media print {
+  html[data-theme='dark'] .bg-white,
+  html[data-theme='high-contrast'] .bg-white {
+    background-color: #ffffff !important;
+  }
+  html[data-theme='dark'] .text-gray-900,
+  html[data-theme='dark'] .text-gray-800,
+  html[data-theme='high-contrast'] .text-gray-900,
+  html[data-theme='high-contrast'] .text-gray-800 {
+    color: #111827 !important;
+  }
+}

@@ -1,0 +1,53 @@
+# Phase 2 — PR preview gate.
+#
+# Every pull request is type-checked, unit-tested and built here so a
+# broken change cannot reach a Render preview environment. The preview
+# environment itself is provisioned by Render (Blueprint > Preview
+# Environments, dashboard toggle — see render.yaml header); this workflow
+# does not claim or fabricate a preview URL. Render posts the real preview
+# URL on the PR once the environment is up.
+
+name: PR Preview Gate
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  preview-gate:
+    name: Type-check, Test & Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        # bun.lock is the lockfile; `npm ci` cannot work (no package-lock.json).
+        run: bun install
+
+      - name: Type-check
+        run: npx tsc --noEmit
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Run unit tests
+        run: npm test
+
+      - name: Build client
+        run: npm run build
+        env:
+          NODE_ENV: production
+
+      - name: Generate API docs and check they are in sync
+        run: |
+          npm run docs:api
+          git diff --exit-code -- docs/api.html || (echo "::error::docs/api.html is out of sync with server/openapi.json. Run 'npm run docs:api' and commit the result." && exit 1)

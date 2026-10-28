@@ -19,13 +19,19 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
 
+      # Phase 2 fix: `npm ci` cannot work — there is no package-lock.json
+      # (bun.lock is the lockfile). `npm install` resolves without one.
       - name: Install dependencies
-        run: npm ci
+        run: npm install
 
       - name: Type-check
         run: npx tsc --noEmit
+
+      # Phase 6: lint is a real gate (eslint + prettier + tsc) and must
+      # run here, not only in preview.yml.
+      - name: Lint
+        run: npm run lint
 
       - name: Run unit tests
         run: npm test
@@ -41,3 +47,31 @@ jobs:
           name: dist
           path: dist
           retention-days: 7
+
+  # Phase 6: the Playwright suite is a real gate too, in its own job so
+  # a browser-install problem cannot mask a unit-test failure (and vice
+  # versa). It runs the production build's E2E preparation + suite
+  # against the disk-persisted fallback store (no PostgreSQL service
+  # here; the PostgreSQL run is a staging/owner step — see docs/staging.md).
+  e2e:
+    name: Playwright E2E (fallback store)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Install Playwright browsers (Chromium only)
+        run: npx playwright install --with-deps chromium
+
+      - name: Run E2E suite
+        run: npm run test:e2e
+        env:
+          NODE_ENV: development

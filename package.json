@@ -9,9 +9,21 @@
     "start": "NODE_ENV=production tsx server/index.ts",
     "db:push": "drizzle-kit push",
     "seed:owner": "tsx server/seed.ts",
-    "test": "node --import tsx --test tests/*.test.ts"
+    "lint": "eslint . && prettier --check server/db.ts server/durableStore.ts server/index.ts server/logger.ts server/errorTracking.ts server/gateway.ts server/publicView.ts server/sessionConfig.ts server/live.ts services/native.ts services/nativePrint.ts services/voice.ts components/SystemStatus.tsx components/Phase3Panel.tsx components/VoicePos.tsx shared/phase3.ts tests/durableStore.test.ts tests/phase3.test.ts tests/phase4.test.ts services/theme.ts utils/contrast.ts design/tokens.ts shared/phase5.ts components/ui.tsx components/DecisionCards.tsx components/CheckoutSheet.tsx components/OfflineState.tsx components/ThemeControls.tsx tests/phase5.test.ts services/api.ts services/amarSync.ts shared/phase6.ts components/VoiceInventory.tsx components/BarcodeScanner.tsx components/Inventory.tsx components/Profile.tsx components/SyncReconciliationModal.tsx components/restaurant/GuestMenu.tsx App.tsx tests/phase6.test.ts tests/e2e/phase6.spec.ts docs/*.md eslint.config.js && tsc --noEmit",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "docs:api": "node scripts/generate-api-docs.mjs",
+    "cap:sync": "CAPACITOR_BUILD=true npm run build && npx cap sync android",
+    "test:e2e:prepare": "node tests/e2e/prepare-admin.mjs",
+    "test:e2e": "npm run build && npm run test:e2e:prepare && playwright test",
+    "test:e2e:ui": "npm run build && npm run test:e2e:prepare && playwright test --ui",
+    "format": "prettier --write server/db.ts server/durableStore.ts server/index.ts tests/durableStore.test.ts docs/*.md eslint.config.js"
   },
   "dependencies": {
+    "@capacitor-community/bluetooth-le": "^8.3.0",
+    "@capacitor/android": "^8.6.0",
+    "@capacitor/cli": "^8.6.0",
+    "@capacitor/core": "^8.6.0",
+    "@zxing/browser": "^0.2.1",
     "connect-pg-simple": "^10.0.0",
     "drizzle-orm": "^0.45.2",
     "drizzle-zod": "^0.8.3",
@@ -28,6 +40,8 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.64.1",
     "@types/connect-pg-simple": "^7.0.3",
     "@types/express": "^5.0.6",
     "@types/express-session": "^1.19.0",
@@ -36,9 +50,17 @@
     "@types/react-dom": "^18.3.0",
     "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^4.2.1",
+    "autoprefixer": "^10.4.20",
     "drizzle-kit": "^0.31.10",
+    "eslint": "^10.13.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.13.0",
+    "postcss": "^8.4.49",
+    "prettier": "^3.9.10",
+    "tailwindcss": "^3.4.17",
     "tsx": "^4.23.0",
     "typescript": "^5.4.3",
+    "typescript-eslint": "^8.72.1",
     "vite": "^5.2.6",
     "vite-plugin-pwa": "^0.19.0"
   }

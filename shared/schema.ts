@@ -1,4 +1,4 @@
-import { pgTable, text, integer, real, boolean, timestamp, jsonb, serial, index } from 'drizzle-orm/pg-core';
+import { pgTable, text, integer, real, boolean, timestamp, jsonb, serial, index, primaryKey } from 'drizzle-orm/pg-core';
 import { createInsertSchema } from 'drizzle-zod';
 import { z } from 'zod';
 
@@ -54,93 +54,109 @@ export const customers = pgTable('customers', {
 // ------------------------------------------------------------------
 // Products
 // ------------------------------------------------------------------
-export const products = pgTable('products', {
-  id: text('id').primaryKey(),
-  storeId: text('store_id').notNull(),
-  name: text('name').notNull(),
-  nameBn: text('name_bn').default(''),
-  price: real('price').notNull(),
-  cost: real('cost').notNull().default(0),
-  category: text('category').notNull(),
-  stock: real('stock').notNull().default(0),
-  unit: text('unit').notNull().default('pcs'),
-  image: text('image'),
-  barcode: text('barcode'),
-  supplier: text('supplier'),
-  expiryDate: text('expiry_date'),
-  batchNumber: text('batch_number'),
-  genericName: text('generic_name'),
-  color: text('color'),
-  size: text('size'),
-  style: text('style'),
-  brand: text('brand'),
-  warranty: text('warranty'),
-  serialNumber: text('serial_number'),
-  dietaryType: text('dietary_type'),
-  preparationTime: integer('preparation_time'),
-  isOnlineVisible: boolean('is_online_visible').default(true),
-  createdAt: timestamp('created_at').defaultNow(),
-}, (table) => [
-  index('products_store_id_idx').on(table.storeId),
-]);
+export const products = pgTable(
+  'products',
+  {
+    id: text('id').primaryKey(),
+    storeId: text('store_id').notNull(),
+    name: text('name').notNull(),
+    nameBn: text('name_bn').default(''),
+    price: real('price').notNull(),
+    cost: real('cost').notNull().default(0),
+    category: text('category').notNull(),
+    stock: real('stock').notNull().default(0),
+    unit: text('unit').notNull().default('pcs'),
+    image: text('image'),
+    barcode: text('barcode'),
+    supplier: text('supplier'),
+    branchId: text('branch_id'),
+    expiryDate: text('expiry_date'),
+    batchNumber: text('batch_number'),
+    genericName: text('generic_name'),
+    color: text('color'),
+    size: text('size'),
+    style: text('style'),
+    brand: text('brand'),
+    warranty: text('warranty'),
+    serialNumber: text('serial_number'),
+    dietaryType: text('dietary_type'),
+    preparationTime: integer('preparation_time'),
+    isOnlineVisible: boolean('is_online_visible').default(true),
+    createdAt: timestamp('created_at').defaultNow(),
+  },
+  (table) => [index('products_store_id_idx').on(table.storeId)],
+);
 
 // ------------------------------------------------------------------
 // Sales (in-store POS transactions)
 // ------------------------------------------------------------------
-export const sales = pgTable('sales', {
-  id: text('id').primaryKey(),
-  storeId: text('store_id').notNull(),
-  date: timestamp('date').notNull().defaultNow(),
-  items: jsonb('items').notNull(),
-  subTotal: real('sub_total').notNull(),
-  discount: real('discount').notNull().default(0),
-  vat: real('vat').notNull().default(0),
-  totalAmount: real('total_amount').notNull(),
-  totalProfit: real('total_profit').notNull().default(0),
-  paymentMethod: text('payment_method').notNull(),
-  customerName: text('customer_name'),
-  customerPhone: text('customer_phone'),
-  paidAmount: real('paid_amount').notNull().default(0),
-  cashReceived: real('cash_received'),
-  changeAmount: real('change_amount'),
-  dueAmount: real('due_amount').notNull().default(0),
-  storeName: text('store_name'),
-  servedBy: text('served_by'),
-}, (table) => [
-  index('sales_store_date_idx').on(table.storeId, table.date),
-]);
+export const sales = pgTable(
+  'sales',
+  {
+    id: text('id').primaryKey(),
+    storeId: text('store_id').notNull(),
+    date: timestamp('date').notNull().defaultNow(),
+    items: jsonb('items').notNull(),
+    subTotal: real('sub_total').notNull(),
+    discount: real('discount').notNull().default(0),
+    vat: real('vat').notNull().default(0),
+    totalAmount: real('total_amount').notNull(),
+    totalProfit: real('total_profit').notNull().default(0),
+    paymentMethod: text('payment_method').notNull(),
+    customerName: text('customer_name'),
+    customerPhone: text('customer_phone'),
+    paidAmount: real('paid_amount').notNull().default(0),
+    cashReceived: real('cash_received'),
+    changeAmount: real('change_amount'),
+    dueAmount: real('due_amount').notNull().default(0),
+    storeName: text('store_name'),
+    servedBy: text('served_by'),
+    branchId: text('branch_id'),
+    counterId: text('counter_id'),
+    couponCode: text('coupon_code'),
+    loyaltyRedeemed: integer('loyalty_redeemed').default(0),
+    loyaltyEarned: integer('loyalty_earned').default(0),
+  },
+  (table) => [index('sales_store_date_idx').on(table.storeId, table.date)],
+);
 
 // ------------------------------------------------------------------
 // Expenses
 // ------------------------------------------------------------------
-export const expenses = pgTable('expenses', {
-  id: text('id').primaryKey(),
-  storeId: text('store_id').notNull(),
-  description: text('description').notNull(),
-  amount: real('amount').notNull(),
-  date: timestamp('date').notNull().defaultNow(),
-  category: text('category').notNull(),
-}, (table) => [
-  index('expenses_store_date_idx').on(table.storeId, table.date),
-]);
+export const expenses = pgTable(
+  'expenses',
+  {
+    id: text('id').primaryKey(),
+    storeId: text('store_id').notNull(),
+    description: text('description').notNull(),
+    amount: real('amount').notNull(),
+    date: timestamp('date').notNull().defaultNow(),
+    category: text('category').notNull(),
+  },
+  (table) => [index('expenses_store_date_idx').on(table.storeId, table.date)],
+);
 
 // ------------------------------------------------------------------
 // Inventory Logs
 // ------------------------------------------------------------------
-export const inventoryLogs = pgTable('inventory_logs', {
-  id: text('id').primaryKey(),
-  storeId: text('store_id').notNull(),
-  productId: text('product_id').notNull(),
-  productName: text('product_name').notNull(),
-  type: text('type').notNull(),
-  quantity: real('quantity').notNull(),
-  reason: text('reason').notNull(),
-  actorId: text('actor_id'),
-  date: timestamp('date').notNull().defaultNow(),
-}, (table) => [
-  index('inventory_logs_store_date_idx').on(table.storeId, table.date),
-  index('inventory_logs_store_product_idx').on(table.storeId, table.productId),
-]);
+export const inventoryLogs = pgTable(
+  'inventory_logs',
+  {
+    id: text('id').primaryKey(),
+    storeId: text('store_id').notNull(),
+    productId: text('product_id').notNull(),
+    productName: text('product_name').notNull(),
+    type: text('type').notNull(),
+    quantity: real('quantity').notNull(),
+    reason: text('reason').notNull(),
+    actorId: text('actor_id'),
+    date: timestamp('date').notNull().defaultNow(),
+  },
+  (table) => [
+    index('inventory_logs_store_date_idx').on(table.storeId, table.date),
+    index('inventory_logs_store_product_idx').on(table.storeId, table.productId),
+  ],
+);
 
 // ------------------------------------------------------------------
 // Subscription Requests
@@ -178,18 +194,20 @@ export const restaurantTables = pgTable('restaurant_tables', {
   isActive: boolean('is_active').notNull().default(true),
 });
 
-export const guestOrders = pgTable('guest_orders', {
-  id: text('id').primaryKey(),
-  storeId: text('store_id').notNull(),
-  tableId: text('table_id').notNull(),
-  items: jsonb('items').notNull(),
-  note: text('note'),
-  status: text('status').notNull().default('pending'),
-  createdAt: timestamp('created_at').notNull().defaultNow(),
-  totalAmount: real('total_amount').notNull(),
-}, (table) => [
-  index('guest_orders_store_status_idx').on(table.storeId, table.status, table.createdAt),
-]);
+export const guestOrders = pgTable(
+  'guest_orders',
+  {
+    id: text('id').primaryKey(),
+    storeId: text('store_id').notNull(),
+    tableId: text('table_id').notNull(),
+    items: jsonb('items').notNull(),
+    note: text('note'),
+    status: text('status').notNull().default('pending'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    totalAmount: real('total_amount').notNull(),
+  },
+  (table) => [index('guest_orders_store_status_idx').on(table.storeId, table.status, table.createdAt)],
+);
 
 // ------------------------------------------------------------------
 // Announcements
@@ -228,6 +246,148 @@ export const onlineOrders = pgTable('online_orders', {
 });
 
 // ------------------------------------------------------------------
+// Payment Intents (AmarPay Ledger)
+// ------------------------------------------------------------------
+export const paymentIntents = pgTable(
+  'payment_intents',
+  {
+    id: text('id').primaryKey(),
+    storeId: text('store_id').notNull(),
+    orderType: text('order_type').notNull(), // 'sale' | 'restaurant' | 'marketplace' | 'subscription'
+    orderId: text('order_id').notNull(),
+    method: text('method').notNull(), // 'cash' | 'bkash' | 'nagad' | 'card' | 'split'
+    amount: real('amount').notNull(),
+    paidAmount: real('paid_amount').notNull().default(0),
+    changeAmount: real('change_amount').notNull().default(0),
+    status: text('status').notNull().default('pending'), // 'pending' | 'authorized' | 'captured' | 'refunded' | 'voided'
+    gatewayTrxId: text('gateway_trx_id'),
+    voidReason: text('void_reason'),
+    details: jsonb('details'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow(),
+  },
+  (table) => [index('payment_intents_store_idx').on(table.storeId, table.status)],
+);
+
+// ------------------------------------------------------------------
+// Phase 3 — Branches, Counters, Suppliers, Purchase Orders,
+// Coupons & Loyalty (drizzle tables + migration 0002; the live server
+// path for these entities is the durable fallback store, same precedent
+// as shifts — see server/storage.ts. Run migration 0002 in staging
+// before wiring these tables into the PostgreSQL branch.)
+// ------------------------------------------------------------------
+export const branches = pgTable(
+  'branches',
+  {
+    id: text('id').primaryKey(),
+    storeId: text('store_id').notNull(),
+    name: text('name').notNull(),
+    address: text('address'),
+    isDefault: boolean('is_default').notNull().default(false),
+    createdAt: timestamp('created_at').defaultNow(),
+  },
+  (table) => [index('branches_store_idx').on(table.storeId)],
+);
+
+export const counters = pgTable(
+  'counters',
+  {
+    id: text('id').primaryKey(),
+    storeId: text('store_id').notNull(),
+    branchId: text('branch_id').notNull(),
+    name: text('name').notNull(),
+    createdAt: timestamp('created_at').defaultNow(),
+  },
+  (table) => [index('counters_branch_idx').on(table.branchId)],
+);
+
+export const suppliers = pgTable(
+  'suppliers',
+  {
+    id: text('id').primaryKey(),
+    storeId: text('store_id').notNull(),
+    name: text('name').notNull(),
+    phone: text('phone'),
+    address: text('address'),
+    notes: text('notes'),
+    totalDue: real('total_due').notNull().default(0),
+    createdAt: timestamp('created_at').defaultNow(),
+  },
+  (table) => [index('suppliers_store_idx').on(table.storeId)],
+);
+
+export const purchaseOrders = pgTable('purchase_orders', {
+  id: text('id').primaryKey(),
+  storeId: text('store_id').notNull(),
+  supplierId: text('supplier_id').notNull(),
+  branchId: text('branch_id'),
+  status: text('status').notNull().default('draft'), // draft | partial | received | cancelled
+  items: jsonb('items').notNull(),
+  totalCost: real('total_cost').notNull().default(0),
+  createdAt: timestamp('created_at').defaultNow(),
+  receivedAt: timestamp('received_at'),
+});
+
+export const coupons = pgTable(
+  'coupons',
+  {
+    id: text('id').primaryKey(),
+    storeId: text('store_id').notNull(),
+    code: text('code').notNull(),
+    type: text('type').notNull(), // percent | fixed
+    value: real('value').notNull(),
+    minPurchase: real('min_purchase').notNull().default(0),
+    maxUses: integer('max_uses').notNull().default(0),
+    usedCount: integer('used_count').notNull().default(0),
+    expiresAt: timestamp('expires_at'),
+    active: boolean('active').notNull().default(true),
+    createdAt: timestamp('created_at').defaultNow(),
+  },
+  (table) => [index('coupons_store_code_idx').on(table.storeId, table.code)],
+);
+
+export const loyaltyAccounts = pgTable(
+  'loyalty_accounts',
+  {
+    // Phase 4 fix: the primary key is (store_id, phone), not phone
+    // alone — two stores must be able to hold balances for the same
+    // customer phone. See migrations/0003_loyalty_store_phone_pk.sql.
+    phone: text('phone').notNull(),
+    storeId: text('store_id').notNull(),
+    name: text('name'),
+    points: integer('points').notNull().default(0),
+    updatedAt: timestamp('updated_at').defaultNow(),
+  },
+  (table) => [
+    index('loyalty_store_idx').on(table.storeId),
+    primaryKey({ columns: [table.storeId, table.phone] }),
+  ],
+);
+
+// ------------------------------------------------------------------
+// Cashier Shifts & Z-Report
+// ------------------------------------------------------------------
+export const shifts = pgTable('shifts', {
+  id: text('id').primaryKey(),
+  storeId: text('store_id').notNull(),
+  branchId: text('branch_id'),
+  counterId: text('counter_id'),
+  cashierId: text('cashier_id').notNull(),
+  cashierName: text('cashier_name').notNull(),
+  openedAt: timestamp('opened_at').notNull().defaultNow(),
+  closedAt: timestamp('closed_at'),
+  openingCash: real('opening_cash').notNull().default(0),
+  totalCashSales: real('total_cash_sales').notNull().default(0),
+  totalDigitalSales: real('total_digital_sales').notNull().default(0),
+  totalExpenses: real('total_expenses').notNull().default(0),
+  expectedCash: real('expected_cash').notNull().default(0),
+  actualCash: real('actual_cash'),
+  discrepancy: real('discrepancy').notNull().default(0),
+  status: text('status').notNull().default('open'), // 'open' | 'closed'
+  notes: text('notes'),
+});
+
+// ------------------------------------------------------------------
 // Zod insert schemas (for request validation)
 // ------------------------------------------------------------------
 export const insertUserSchema = createInsertSchema(users).omit({ createdAt: true });
@@ -242,6 +402,14 @@ export const insertRestaurantTableSchema = createInsertSchema(restaurantTables);
 export const insertGuestOrderSchema = createInsertSchema(guestOrders).omit({ createdAt: true });
 export const insertAnnouncementSchema = createInsertSchema(announcements).omit({ createdAt: true });
 export const insertOnlineOrderSchema = createInsertSchema(onlineOrders).omit({ createdAt: true, updatedAt: true });
+export const insertPaymentIntentSchema = createInsertSchema(paymentIntents).omit({ createdAt: true, updatedAt: true });
+export const insertShiftSchema = createInsertSchema(shifts).omit({ openedAt: true });
+export const insertBranchSchema = createInsertSchema(branches).omit({ createdAt: true });
+export const insertCounterSchema = createInsertSchema(counters).omit({ createdAt: true });
+export const insertSupplierSchema = createInsertSchema(suppliers).omit({ createdAt: true });
+export const insertPurchaseOrderSchema = createInsertSchema(purchaseOrders).omit({ createdAt: true });
+export const insertCouponSchema = createInsertSchema(coupons).omit({ createdAt: true });
+export const insertLoyaltyAccountSchema = createInsertSchema(loyaltyAccounts);
 
 export type User = typeof users.$inferSelect;
 export type Staff = typeof staff.$inferSelect;
@@ -256,6 +424,14 @@ export type RestaurantTable = typeof restaurantTables.$inferSelect;
 export type GuestOrder = typeof guestOrders.$inferSelect;
 export type Announcement = typeof announcements.$inferSelect;
 export type OnlineOrder = typeof onlineOrders.$inferSelect;
+export type PaymentIntent = typeof paymentIntents.$inferSelect;
+export type Shift = typeof shifts.$inferSelect;
+export type Branch = typeof branches.$inferSelect;
+export type Counter = typeof counters.$inferSelect;
+export type Supplier = typeof suppliers.$inferSelect;
+export type PurchaseOrder = typeof purchaseOrders.$inferSelect;
+export type Coupon = typeof coupons.$inferSelect;
+export type LoyaltyAccount = typeof loyaltyAccounts.$inferSelect;
 
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type InsertStaff = z.infer<typeof insertStaffSchema>;
@@ -269,5 +445,7 @@ export type InsertRestaurantTable = z.infer<typeof insertRestaurantTableSchema>;
 export type InsertGuestOrder = z.infer<typeof insertGuestOrderSchema>;
 export type InsertAnnouncement = z.infer<typeof insertAnnouncementSchema>;
 export type InsertOnlineOrder = z.infer<typeof insertOnlineOrderSchema>;
+export type InsertPaymentIntent = z.infer<typeof insertPaymentIntentSchema>;
+export type InsertShift = z.infer<typeof insertShiftSchema>;
 
 export const ONLINE_ORDER_STATUSES = ['placed', 'confirmed', 'out_for_delivery', 'delivered', 'cancelled'] as const;

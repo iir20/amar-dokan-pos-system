@@ -1,4 +1,24 @@
-import { Product, Sale, CartItem, User, Expense, SubscriptionRequest, PaymentSettings, GlobalPricingConfig, Staff, InventoryLog, RestaurantTable, GuestOrder, Announcement, GlobalConfig, Customer, OnlineOrder, StoreDirectoryEntry } from '../types';
+import {
+  Product,
+  Sale,
+  CartItem,
+  User,
+  Expense,
+  SubscriptionRequest,
+  PaymentSettings,
+  GlobalPricingConfig,
+  Staff,
+  InventoryLog,
+  RestaurantTable,
+  GuestOrder,
+  Announcement,
+  GlobalConfig,
+  Customer,
+  OnlineOrder,
+  StoreDirectoryEntry,
+  PaymentIntent,
+  Shift,
+} from '../types';
 import { api } from './api';
 
 let cachedRole: 'owner' | 'staff' | 'customer' | null = null;
@@ -77,6 +97,19 @@ export const StorageService = {
   // --- Products ---
   getProducts: async (): Promise<Product[]> => api.get('/products'),
 
+  // Phase 6 — server-side barcode lookup (own store only, server-scoped).
+  getProductByBarcode: async (barcode: string): Promise<Product> =>
+    api.get(`/products/barcode/${encodeURIComponent(barcode)}`),
+
+  bulkProducts: async (body: {
+    ids: string[];
+    action: 'adjust-stock' | 'set-price' | 'delete';
+    delta?: number;
+    price?: number;
+    confirmed?: boolean;
+  }): Promise<{ updated: number; deleted: number; skipped: Array<{ id: string; reason: string }> }> =>
+    api.post('/products/bulk', body),
+
   saveProduct: async (product: Product) => api.post('/products', product),
 
   deleteProduct: async (id: string) => api.del(`/products/${id}`),
@@ -85,6 +118,7 @@ export const StorageService = {
   getSales: async (): Promise<Sale[]> => api.get('/sales'),
 
   addSale: async (sale: Sale) => api.post('/sales', sale),
+  createSale: async (sale: Sale) => api.post('/sales', sale),
 
   // --- Expenses ---
   getExpenses: async (): Promise<Expense[]> => api.get('/expenses'),
@@ -118,6 +152,8 @@ export const StorageService = {
   deleteUserAdmin: async (id: string) => api.del(`/admin/users/${id}`),
 
   getAllSales: async (): Promise<Sale[]> => api.get('/admin/sales'),
+  // Phase 2 — admin system-status (live DB ping, outbox depth, last backup).
+  getSystemStatus: async (): Promise<any> => api.get('/admin/system-status'),
 
   // --- Subscription ---
   createSubscriptionRequest: async (req: SubscriptionRequest) => api.post('/subscription-requests', req),
@@ -166,7 +202,8 @@ export const StorageService = {
 
   getPublicTable: async (tableId: string): Promise<RestaurantTable> => api.get(`/public/table/${tableId}`),
 
-  createGuestOrder: async (order: Omit<GuestOrder, 'id'> & { idempotencyKey: string }) => api.post('/public/guest-orders', order),
+  createGuestOrder: async (order: Omit<GuestOrder, 'id'> & { idempotencyKey: string }) =>
+    api.post('/public/guest-orders', order),
 
   getGuestOrder: async (id: string): Promise<GuestOrder> => api.get(`/public/guest-orders/${id}`),
 
@@ -198,7 +235,8 @@ export const StorageService = {
   // --- Marketplace: Browse & Search ---
   getMarketplaceStores: async (): Promise<StoreDirectoryEntry[]> => api.get('/marketplace/stores'),
 
-  getMarketplaceStoreProducts: async (storeId: string): Promise<Product[]> => api.get(`/marketplace/stores/${storeId}/products`),
+  getMarketplaceStoreProducts: async (storeId: string): Promise<Product[]> =>
+    api.get(`/marketplace/stores/${storeId}/products`),
 
   searchMarketplaceProducts: async (q?: string, category?: string): Promise<Product[]> => {
     const params = new URLSearchParams();
@@ -225,7 +263,113 @@ export const StorageService = {
   // --- Online Orders (store owner side) ---
   getStoreOnlineOrders: async (): Promise<OnlineOrder[]> => api.get('/orders/store'),
 
-  updateOnlineOrderStatus: async (id: string, status: string): Promise<OnlineOrder> => api.put(`/orders/${id}/status`, { status }),
+  updateOnlineOrderStatus: async (id: string, status: string): Promise<OnlineOrder> =>
+    api.put(`/orders/${id}/status`, { status }),
 
-  updateProductOnlineVisibility: async (id: string, isOnlineVisible: boolean): Promise<Product> => api.put(`/products/${id}/online-visibility`, { isOnlineVisible }),
+  updateProductOnlineVisibility: async (id: string, isOnlineVisible: boolean): Promise<Product> =>
+    api.put(`/products/${id}/online-visibility`, { isOnlineVisible }),
+
+  // --- Restaurant Settlement & Void (AmarPay) ---
+  settleGuestOrder: async (
+    orderId: string,
+    data: {
+      paymentMethod: 'cash' | 'bkash' | 'nagad' | 'card' | 'split';
+      paidAmount?: number;
+      cashReceived?: number;
+      discount?: number;
+      vatRate?: number;
+      splitDetails?: any;
+      gatewayTrxId?: string;
+    },
+  ): Promise<{ order: GuestOrder; sale: Sale; paymentIntent: PaymentIntent }> =>
+    api.post(`/restaurant/guest-orders/${orderId}/settle`, data),
+
+  voidGuestOrder: async (orderId: string, reason: string): Promise<GuestOrder> =>
+    api.post(`/restaurant/guest-orders/${orderId}/void`, { reason }),
+
+  // --- Cashier Shifts & Z-Report ---
+  getCurrentShift: async (): Promise<Shift | null> => api.get('/shifts/current'),
+  openShift: async (data: {
+    openingCash: number;
+    notes?: string;
+    branchId?: string;
+    counterId?: string;
+  }): Promise<Shift> => api.post('/shifts/open', data),
+  closeShift: async (id: string, data: { actualCash: number; notes?: string }): Promise<Shift> =>
+    api.post(`/shifts/${id}/close`, data),
+  getShifts: async (): Promise<Shift[]> => api.get('/shifts'),
+
+  // --- Payment Gateway Verification ---
+  // Phase 1 fix (P1-2): this is a FORMAT CHECK ONLY. The server never
+  // contacts a gateway; `gatewayVerified` is always false. Callers must not
+  // treat a response here as proof of payment, and no capture path uses it.
+  verifyGatewayPayment: async (data: {
+    gateway?: string;
+    trxId: string;
+    amount?: number;
+    phone?: string;
+  }): Promise<{
+    formatValid: boolean;
+    gatewayVerified: boolean;
+    verified: boolean;
+    valid: boolean;
+    verificationMethod: string;
+    trxId: string;
+    gateway: string;
+    amount: number;
+    phone?: string | null;
+    checkedAt: string;
+    message: string;
+  }> => api.post('/payments/verify-gateway', data),
+
+  // --- Backup Export ---
+  exportBackup: async (): Promise<any> => api.get('/admin/backups/export'),
+
+  // --- Phase 3 (Depth) ---
+  getForecast: async (windowDays = 30, leadTimeDays = 7): Promise<any> =>
+    api.get(`/insights/forecast?windowDays=${windowDays}&leadTimeDays=${leadTimeDays}`),
+  getExpiryAlerts: async (): Promise<any> => api.get('/insights/expiry'),
+  getDeadStock: async (windowDays = 90): Promise<any> => api.get(`/insights/dead-stock?windowDays=${windowDays}`),
+  getBranches: async (): Promise<import('../types').Branch[]> => api.get('/branches'),
+  createBranch: async (data: { name: string; address?: string; isDefault?: boolean }) => api.post('/branches', data),
+  getBranchProducts: async (branchId: string) => api.get(`/branches/${branchId}/products`),
+  getBranchSales: async (branchId: string) => api.get(`/branches/${branchId}/sales`),
+  getCounters: async (branchId: string) => api.get(`/branches/${branchId}/counters`),
+  createCounter: async (data: { branchId: string; name: string }) => api.post('/counters', data),
+  getZReport: async (): Promise<any> => api.get('/shifts/z-report'),
+  getSuppliers: async (): Promise<import('../types').Supplier[]> => api.get('/suppliers'),
+  createSupplier: async (data: { name: string; phone?: string; address?: string; notes?: string }) =>
+    api.post('/suppliers', data),
+  deleteSupplier: async (id: string) => api.del(`/suppliers/${id}`),
+  getSupplierDuesTotal: async (): Promise<{ totalDue: number }> => api.get('/suppliers/dues-total'),
+  paySupplier: async (id: string, amount: number) => api.post(`/suppliers/${id}/pay`, { amount }),
+  getPurchaseOrders: async (): Promise<import('../types').PurchaseOrder[]> => api.get('/purchase-orders'),
+  createPurchaseOrder: async (data: {
+    supplierId: string;
+    branchId?: string;
+    items: Array<{ productId: string; quantity: number; cost: number }>;
+  }) => api.post('/purchase-orders', data),
+  receivePurchaseOrder: async (id: string, received: Array<{ productId: string; quantity: number }>) =>
+    api.post(`/purchase-orders/${id}/receive`, { received }),
+  cancelPurchaseOrder: async (id: string) => api.post(`/purchase-orders/${id}/cancel`),
+  getCoupons: async (): Promise<import('../types').Coupon[]> => api.get('/coupons'),
+  createCoupon: async (data: {
+    code: string;
+    type: 'percent' | 'fixed';
+    value: number;
+    minPurchase?: number;
+    maxUses?: number;
+    expiresAt?: string | null;
+  }) => api.post('/coupons', data),
+  deleteCoupon: async (id: string) => api.del(`/coupons/${id}`),
+  getLoyaltyAccounts: async (): Promise<import('../types').LoyaltyAccount[]> => api.get('/loyalty'),
+  getLoyaltyAccount: async (phone: string): Promise<import('../types').LoyaltyAccount> =>
+    api.get(`/loyalty/${encodeURIComponent(phone)}`),
+  downloadReportCsv: async (kind: 'vat' | 'profit-by-category' | 'staff-performance' | 'excel'): Promise<string> => {
+    const res = await fetch(`/api/reports/${kind === 'excel' ? 'excel' : kind}.csv`, { credentials: 'include' });
+    if (!res.ok) throw new Error(`Export failed (${res.status})`);
+    return res.text();
+  },
+  getFullExport: async (): Promise<any> => api.get('/reports/full-export'),
+  importFullData: async (payload: any): Promise<any> => api.post('/reports/import', payload),
 };

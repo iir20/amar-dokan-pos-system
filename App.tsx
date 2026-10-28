@@ -1,5 +1,25 @@
 import React, { useState, useEffect, Suspense } from 'react';
-import { LayoutDashboard, ShoppingCart, Package, Settings, LogOut, Menu, X, Languages, ClipboardList, Wallet, UserCircle, Wifi, Crown, Shield, Utensils, ChefHat, PieChart, MessageCircle, Store } from 'lucide-react';
+import {
+  LayoutDashboard,
+  ShoppingCart,
+  Package,
+  Settings,
+  LogOut,
+  Menu,
+  X,
+  Languages,
+  ClipboardList,
+  Wallet,
+  UserCircle,
+  Wifi,
+  Crown,
+  Shield,
+  Utensils,
+  ChefHat,
+  PieChart,
+  MessageCircle,
+  Store,
+} from 'lucide-react';
 import { StorageService } from './services/storage';
 import { Sale, Language, User, Permission } from './types';
 import { TRANSLATIONS, APP_LOGO } from './constants';
@@ -11,10 +31,16 @@ import ErrorBoundary from './components/ErrorBoundary';
 // Import DailyReport Directly to prevent lazy loading issues
 import DailyReport from './components/DailyReport';
 
+// Phase 2 fix (found by E2E): Invoice is imported directly, not lazy.
+// The offline checkout path calls onCheckout() immediately after queuing
+// the sale; a lazy Invoice chunk fetch fails while offline and the
+// ErrorBoundary crashes the whole app — exactly when the shopkeeper
+// most needs the sync pill visible. Same precedent as DailyReport.
+import Invoice from './components/Invoice';
+
 // Lazy Load Other Components
 const POS = React.lazy(() => import('./components/POS'));
 const Dashboard = React.lazy(() => import('./components/Dashboard'));
-const Invoice = React.lazy(() => import('./components/Invoice'));
 const Inventory = React.lazy(() => import('./components/Inventory'));
 const DueList = React.lazy(() => import('./components/DueList'));
 const Auth = React.lazy(() => import('./components/Auth'));
@@ -23,6 +49,9 @@ const Profile = React.lazy(() => import('./components/Profile'));
 const AdminPanel = React.lazy(() => import('./components/AdminPanel'));
 const SubscriptionModal = React.lazy(() => import('./components/SubscriptionModal'));
 const StoreOrders = React.lazy(() => import('./components/StoreOrders'));
+const SyncReconciliationModal = React.lazy(() => import('./components/SyncReconciliationModal'));
+const ShiftModal = React.lazy(() => import('./components/ShiftModal'));
+const Phase3Panel = React.lazy(() => import('./components/Phase3Panel'));
 
 // Restaurant Components
 const TableManager = React.lazy(() => import('./components/restaurant/TableManager'));
@@ -32,7 +61,31 @@ const GuestMenu = React.lazy(() => import('./components/restaurant/GuestMenu'));
 // Marketplace (Customer) Components
 const MarketplaceApp = React.lazy(() => import('./components/marketplace/MarketplaceApp'));
 
-type View = 'dashboard' | 'pos' | 'inventory' | 'dueList' | 'expenses' | 'profile' | 'admin' | 'tables' | 'kitchen' | 'guest_menu' | 'reports' | 'orders';
+import { subscribeSync, getOutbox, flushOutbox, retryFailedOutbox } from './services/amarSync';
+import { subscribeConnection, type ConnectionState } from './services/api';
+import { useAmarLive } from './hooks/useAmarLive';
+// Phase 2 — native-shell badge for the Capacitor Android app.
+import { isNativePlatform } from './services/native';
+// Phase 5 — design system: global theme, offline state, sync animation.
+import ThemeControls from './components/ThemeControls';
+import OfflineState from './components/OfflineState';
+import { applyTheme, getTheme, getFontScale } from './services/theme';
+import { speakBangla } from './services/voice';
+
+type View =
+  | 'dashboard'
+  | 'pos'
+  | 'inventory'
+  | 'dueList'
+  | 'expenses'
+  | 'profile'
+  | 'admin'
+  | 'tables'
+  | 'kitchen'
+  | 'guest_menu'
+  | 'reports'
+  | 'orders'
+  | 'phase3';
 
 const App = () => {
   const [booted, setBooted] = useState(false);
@@ -59,21 +112,24 @@ const App = () => {
   const whatsappNumber = globalConfig?.whatsappNumber;
 
   useEffect(() => {
-    StorageService.bootstrap().then((res) => {
-      if (res.role === 'owner' || res.role === 'staff') {
-        setIsAuthenticated(true);
-        setUser(res.user || null);
-        if (res.role === 'staff' && res.staff) {
-          setPermissions(res.staff.permissions);
-        } else {
-          setPermissions('all');
+    StorageService.bootstrap()
+      .then((res) => {
+        if (res.role === 'owner' || res.role === 'staff') {
+          setIsAuthenticated(true);
+          setUser(res.user || null);
+          if (res.role === 'staff' && res.staff) {
+            setPermissions(res.staff.permissions);
+          } else {
+            setPermissions('all');
+          }
         }
-      }
-    }).catch(() => {
-      setBootstrapError('Could not reach the POS server. Check your connection and try again.');
-    }).finally(() => {
-      setBooted(true);
-    });
+      })
+      .catch(() => {
+        setBootstrapError('Could not reach the POS server. Check your connection and try again.');
+      })
+      .finally(() => {
+        setBooted(true);
+      });
   }, []);
 
   // Handle URL Parameters for Guest Mode (QR Code Scan)
@@ -91,6 +147,59 @@ const App = () => {
 
   const isAdmin = user?.isPlatformAdmin === true;
   const isRestaurant = user?.storeCategory === 'restaurant';
+
+  const [showSyncModal, setShowSyncModal] = useState(false);
+  const [showShiftModal, setShowShiftModal] = useState(false);
+  const [syncCount, setSyncCount] = useState(() => getOutbox().filter((i) => i.status === 'pending').length);
+  const [syncFailed, setSyncFailed] = useState(() => getOutbox().filter((i) => i.status === 'failed').length);
+  const [connectionState, setConnectionState] = useState<ConnectionState>('online');
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncAnnouncement, setSyncAnnouncement] = useState('');
+
+  // Phase 5 — apply the persisted theme + font scale on boot.
+  useEffect(() => {
+    applyTheme(getTheme(), getFontScale());
+  }, []);
+
+  useEffect(() => {
+    const unsub = subscribeSync((state) => {
+      setSyncCount(state.outboxCount);
+      setSyncFailed(state.failedCount);
+      setIsSyncing(state.isSyncing);
+    });
+    return unsub;
+  }, []);
+
+  // Phase 6 — truthful connection state from the API layer: a request
+  // retrying in flight reports 'reconnecting', not a stale 'online'.
+  useEffect(() => subscribeConnection(setConnectionState), []);
+
+  // Phase 5 — sync-completed confirmation: Bangla voice + always-visible
+  // text (aria-live region below the top bar). Voice never gates sync.
+  const wasSyncingRef = React.useRef(false);
+  useEffect(() => {
+    if (isSyncing) {
+      wasSyncingRef.current = true;
+      return;
+    }
+    if (wasSyncingRef.current && syncCount === 0) {
+      wasSyncingRef.current = false;
+      setSyncAnnouncement(lang === 'bn' ? 'সিঙ্ক সম্পন্ন হয়েছে' : 'Sync completed');
+      speakBangla('সিঙ্ক সম্পন্ন হয়েছে');
+    }
+  }, [isSyncing, syncCount, lang]);
+
+  // AmarLive real-time WebSocket connection
+  const { isConnected: isLiveConnected } = useAmarLive(user?.id, (event) => {
+    if (event.type === 'NEW_ORDER') {
+      try {
+        const audio = new Audio(
+          'data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdJivrJBhNjVgodDbq2EcBj+a1/S9cT8q',
+        );
+        audio.play().catch(() => {});
+      } catch {}
+    }
+  });
 
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
 
@@ -139,14 +248,24 @@ const App = () => {
   const isGuestMode = !!activeGuestTableId;
 
   if (!booted) {
-    return <div className="h-screen w-screen flex items-center justify-center"><Loader /></div>;
+    return (
+      <div className="h-screen w-screen flex items-center justify-center">
+        <Loader />
+      </div>
+    );
   }
 
   // Customer Marketplace Mode (fully separate app)
   if (mode === 'marketplace') {
     return (
       <ErrorBoundary>
-        <Suspense fallback={<div className="h-screen w-screen flex items-center justify-center"><Loader /></div>}>
+        <Suspense
+          fallback={
+            <div className="h-screen w-screen flex items-center justify-center">
+              <Loader />
+            </div>
+          }
+        >
           <MarketplaceApp lang={lang} setLang={setLang} onExitToStoreLogin={() => setMode('store')} />
         </Suspense>
       </ErrorBoundary>
@@ -156,14 +275,28 @@ const App = () => {
   if (!isAuthenticated && !isGuestMode) {
     return (
       <ErrorBoundary>
-        <Suspense fallback={<div className="h-screen w-screen flex items-center justify-center"><Loader /></div>}>
+        <Suspense
+          fallback={
+            <div className="h-screen w-screen flex items-center justify-center">
+              <Loader />
+            </div>
+          }
+        >
           <div className="animate-fade-in w-full h-full">
             {bootstrapError && (
-              <div role="alert" className="mx-auto mt-3 max-w-xl rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+              <div
+                role="alert"
+                className="mx-auto mt-3 max-w-xl rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900"
+              >
                 {bootstrapError}
               </div>
             )}
-            <Auth onLogin={handleLogin} lang={lang} setLang={setLang} onGoToMarketplace={() => setMode('marketplace')} />
+            <Auth
+              onLogin={handleLogin}
+              lang={lang}
+              setLang={setLang}
+              onGoToMarketplace={() => setMode('marketplace')}
+            />
           </div>
         </Suspense>
       </ErrorBoundary>
@@ -174,10 +307,17 @@ const App = () => {
   if (currentView === 'guest_menu' && activeGuestTableId) {
     return (
       <ErrorBoundary>
-        <Suspense fallback={<div className="h-screen flex items-center justify-center"><Loader /></div>}>
+        <Suspense
+          fallback={
+            <div className="h-screen flex items-center justify-center">
+              <Loader />
+            </div>
+          }
+        >
           <div className="animate-fade-in h-full">
             <GuestMenu
               lang={lang}
+              setLang={setLang}
               tableId={activeGuestTableId}
               storeId={activeGuestStoreId}
               onExit={() => {
@@ -200,15 +340,26 @@ const App = () => {
     return permissions.includes(perm);
   };
 
-  const NavItem = ({ view, icon: Icon, label, reqPerm }: { view: View; icon: any; label: string, reqPerm?: Permission | Permission[] }) => {
+  const NavItem = ({
+    view,
+    icon: Icon,
+    label,
+    reqPerm,
+  }: {
+    view: View;
+    icon: any;
+    label: string;
+    reqPerm?: Permission | Permission[];
+  }) => {
     if (reqPerm && !(Array.isArray(reqPerm) ? reqPerm.some(hasPermission) : hasPermission(reqPerm))) return null;
     return (
       <button
+        data-testid={`nav-${view}`}
         onClick={() => {
           setCurrentView(view);
           setIsSidebarOpen(false);
         }}
-        className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${
+        className={`w-full flex items-center gap-3 px-4 py-3 min-h-[48px] rounded-lg transition-colors ${
           currentView === view
             ? 'bg-emerald-50 text-emerald-600 font-medium scale-[1.02] shadow-sm'
             : 'text-gray-600 hover:bg-gray-50'
@@ -222,25 +373,38 @@ const App = () => {
 
   const getPageTitle = () => {
     switch (currentView) {
-      case 'dashboard': return TRANSLATIONS[lang].dashboard;
-      case 'pos': return TRANSLATIONS[lang].pos;
-      case 'inventory': return TRANSLATIONS[lang].inventory;
-      case 'dueList': return TRANSLATIONS[lang].dueList;
-      case 'expenses': return TRANSLATIONS[lang].expenses;
-      case 'profile': return TRANSLATIONS[lang].profile;
-      case 'admin': return 'Admin Panel';
-      case 'tables': return TRANSLATIONS[lang].tables;
-      case 'kitchen': return TRANSLATIONS[lang].kitchen;
-      case 'reports': return TRANSLATIONS[lang].dailyReport;
-      case 'orders': return 'Online Orders';
-      default: return 'Amar Dokan';
+      case 'dashboard':
+        return TRANSLATIONS[lang].dashboard;
+      case 'pos':
+        return TRANSLATIONS[lang].pos;
+      case 'inventory':
+        return TRANSLATIONS[lang].inventory;
+      case 'dueList':
+        return TRANSLATIONS[lang].dueList;
+      case 'expenses':
+        return TRANSLATIONS[lang].expenses;
+      case 'profile':
+        return TRANSLATIONS[lang].profile;
+      case 'admin':
+        return 'Admin Panel';
+      case 'tables':
+        return TRANSLATIONS[lang].tables;
+      case 'kitchen':
+        return TRANSLATIONS[lang].kitchen;
+      case 'reports':
+        return TRANSLATIONS[lang].dailyReport;
+      case 'orders':
+        return 'Online Orders';
+      case 'phase3':
+        return TRANSLATIONS[lang].depthPanel;
+      default:
+        return 'Amar Dokan';
     }
   };
 
   return (
     <ErrorBoundary>
       <div className="flex h-screen bg-white font-sans text-gray-900 overflow-hidden relative">
-
         <InstallPrompt lang={lang} />
 
         {/* --- GLOBAL WHATSAPP SUPPORT CHAT --- */}
@@ -274,13 +438,19 @@ const App = () => {
           />
         )}
 
-        <aside className={`fixed md:relative z-40 w-64 h-full bg-white border-r transform transition-transform duration-300 ease-out flex flex-col shadow-xl md:shadow-none ${
-          isSidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'
-        }`}>
+        <aside
+          className={`fixed md:relative z-40 w-64 h-full bg-white border-r transform transition-transform duration-300 ease-out flex flex-col shadow-xl md:shadow-none ${
+            isSidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'
+          }`}
+        >
           <div className="p-6 border-b flex justify-between items-center bg-gradient-to-r from-emerald-50 to-white">
             <div className="flex items-center gap-3">
               <div className="relative group">
-                <img src={globalLogo} alt="Logo" className="w-10 h-10 object-contain drop-shadow-sm transition-transform group-hover:scale-110" />
+                <img
+                  src={globalLogo}
+                  alt="Logo"
+                  className="w-10 h-10 object-contain drop-shadow-sm transition-transform group-hover:scale-110"
+                />
               </div>
               <div>
                 <h1 className="text-xl font-bold text-emerald-700 leading-tight">Amar Dokan</h1>
@@ -297,18 +467,49 @@ const App = () => {
               <NavItem view="admin" icon={Shield} label="Admin Dashboard" />
             ) : (
               <>
-                <NavItem view="dashboard" icon={LayoutDashboard} label={TRANSLATIONS[lang].dashboard} reqPerm="view_reports" />
+                <NavItem
+                  view="dashboard"
+                  icon={LayoutDashboard}
+                  label={TRANSLATIONS[lang].dashboard}
+                  reqPerm="view_reports"
+                />
                 <NavItem view="pos" icon={ShoppingCart} label={TRANSLATIONS[lang].pos} reqPerm="process_sale" />
-                <NavItem view="inventory" icon={Package} label={TRANSLATIONS[lang].inventory} reqPerm="manage_inventory" />
+                <NavItem
+                  view="inventory"
+                  icon={Package}
+                  label={TRANSLATIONS[lang].inventory}
+                  reqPerm="manage_inventory"
+                />
                 <NavItem view="orders" icon={Store} label="Online Orders" reqPerm="process_sale" />
                 {isRestaurant && (
                   <>
-                    <NavItem view="tables" icon={Utensils} label={TRANSLATIONS[lang].tables} reqPerm="manage_settings" />
-                    <NavItem view="kitchen" icon={ChefHat} label={TRANSLATIONS[lang].kitchen} reqPerm="manage_restaurant" />
+                    <NavItem
+                      view="tables"
+                      icon={Utensils}
+                      label={TRANSLATIONS[lang].tables}
+                      reqPerm="manage_settings"
+                    />
+                    <NavItem
+                      view="kitchen"
+                      icon={ChefHat}
+                      label={TRANSLATIONS[lang].kitchen}
+                      reqPerm="manage_restaurant"
+                    />
                   </>
                 )}
-                <NavItem view="dueList" icon={ClipboardList} label={TRANSLATIONS[lang].dueList} reqPerm="view_reports" />
-                <NavItem view="expenses" icon={Wallet} label={TRANSLATIONS[lang].expenses} reqPerm={['view_reports', 'manage_expenses']} />
+                <NavItem
+                  view="dueList"
+                  icon={ClipboardList}
+                  label={TRANSLATIONS[lang].dueList}
+                  reqPerm="view_reports"
+                />
+                <NavItem view="phase3" icon={Package} label={TRANSLATIONS[lang].depthPanel} reqPerm="view_reports" />
+                <NavItem
+                  view="expenses"
+                  icon={Wallet}
+                  label={TRANSLATIONS[lang].expenses}
+                  reqPerm={['view_reports', 'manage_expenses']}
+                />
                 <NavItem view="reports" icon={PieChart} label={TRANSLATIONS[lang].dailyReport} reqPerm="view_reports" />
                 <NavItem view="profile" icon={UserCircle} label={TRANSLATIONS[lang].profile} />
               </>
@@ -331,14 +532,18 @@ const App = () => {
           </nav>
 
           <div className="p-4 border-t bg-gray-50 space-y-4">
-            <div className={`flex items-center gap-2 px-2 text-xs font-medium ${isOnline ? 'text-green-600' : 'text-orange-500'}`}>
+            <div
+              className={`flex items-center gap-2 px-2 text-xs font-medium ${isOnline ? 'text-green-600' : 'text-orange-500'}`}
+            >
               <Wifi size={14} />
-              <span>{isOnline ? 'Online' : 'Offline'}</span>
+              <span data-testid="connection-state">
+                {connectionState === 'reconnecting' ? 'Reconnecting…' : isOnline ? 'Online' : 'Offline'}
+              </span>
             </div>
 
             <div className="flex items-center justify-between px-2">
               <button
-                onClick={() => setLang(prev => prev === 'en' ? 'bn' : 'en')}
+                onClick={() => setLang((prev) => (prev === 'en' ? 'bn' : 'en'))}
                 className="flex items-center gap-2 text-sm text-gray-600 hover:text-emerald-600"
               >
                 <Languages size={16} />
@@ -355,54 +560,179 @@ const App = () => {
         </aside>
 
         <main className="flex-1 flex flex-col h-full overflow-hidden relative">
-          <div className="md:hidden bg-white border-b p-4 flex justify-between items-center shadow-sm z-20">
-            <button onClick={() => setIsSidebarOpen(true)}>
-              <Menu size={24} className="text-gray-600" />
-            </button>
-            <span className="font-semibold text-gray-800">
-              {getPageTitle()}
-            </span>
-            <div className="w-6" />
+          {/* Top Bar for Desktop & Mobile */}
+          <div className="bg-white border-b px-4 py-2.5 flex justify-between items-center shadow-xs z-20">
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => setIsSidebarOpen(true)}
+                aria-label="Open menu"
+                className="md:hidden text-gray-600 p-1 ad-tap flex items-center justify-center"
+              >
+                <Menu size={22} />
+              </button>
+              <h2 className="font-bold text-gray-800 text-base md:text-lg">{getPageTitle()}</h2>
+            </div>
+
+            <div className="flex items-center gap-2">
+              {/* Phase 5 — Bangla-first language toggle on EVERY screen:
+                  the top bar is global, so this toggle is always reachable
+                  (the sidebar toggle is kept as well). */}
+              <button
+                data-testid="lang-toggle"
+                onClick={() => setLang((prev) => (prev === 'en' ? 'bn' : 'en'))}
+                aria-label={lang === 'en' ? 'Switch language to Bangla' : 'ভাষা ইংরেজিতে বদলান'}
+                className="ad-tap flex items-center gap-1 px-2 rounded-lg border border-gray-200 bg-white text-gray-700 text-sm font-bold"
+              >
+                <Languages size={16} />
+                <span>{lang === 'en' ? 'বাংলা' : 'English'}</span>
+              </button>
+              <ThemeControls lang={lang} />
+              {/* AmarLive Realtime indicator */}
+              <div
+                title={isLiveConnected ? 'AmarLive WebSocket: Connected' : 'AmarLive WebSocket: Polling fallback'}
+                className={`hidden sm:flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-semibold ${
+                  isLiveConnected ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-100 text-gray-500'
+                }`}
+              >
+                <span
+                  className={`w-2 h-2 rounded-full ${isLiveConnected ? 'bg-emerald-500 animate-pulse' : 'bg-gray-400'}`}
+                />
+                <span>Live</span>
+              </div>
+
+              {/* Phase 2 — native-shell badge (Android app only, hidden on web). */}
+              {isNativePlatform() && (
+                <span
+                  data-testid="native-badge"
+                  className="hidden sm:flex items-center px-2 py-1 rounded-full text-xs font-semibold bg-slate-800 text-white"
+                  title="Running inside the installed Android app"
+                >
+                  📱 App
+                </span>
+              )}
+
+              {/* AmarSync Protocol Pill — the native sync indicator: the same
+                  pending-sync count / sync state is shown in the app shell,
+                  so a shopkeeper always sees unsynced sales at a glance. */}
+              <button
+                data-testid="sync-indicator"
+                data-sync-state={isSyncing ? 'syncing' : syncCount > 0 ? 'pending' : !isOnline ? 'offline' : 'synced'}
+                aria-live="polite"
+                onClick={() => setShowSyncModal(true)}
+                className={`ad-tap flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold border transition ${
+                  syncCount > 0
+                    ? 'bg-amber-50 text-amber-800 border-amber-300'
+                    : !isOnline
+                      ? 'bg-red-50 text-red-700 border-red-300'
+                      : 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+                }`}
+                title="AmarSync Offline Outbox Status"
+              >
+                {/* Phase 5 — animated sync dot: spins while syncing, pulses
+                    while items are pending, solid when synced. */}
+                <span
+                  data-testid="sync-dot"
+                  aria-hidden="true"
+                  className={`ad-sync-dot ${isSyncing ? 'ad-sync-dot--syncing' : syncCount > 0 ? 'ad-sync-dot--pending' : 'ad-sync-dot--synced'}`}
+                />
+                <span>
+                  {isSyncing
+                    ? '🔄 Syncing...'
+                    : syncCount > 0
+                      ? `🔄 ${syncCount} Unsynced`
+                      : syncFailed > 0
+                        ? `⚠️ ${syncFailed} failed — tap to retry`
+                        : !isOnline
+                          ? '⚠️ Offline'
+                          : '✓ Synced'}
+                </span>
+              </button>
+
+              {/* Cashier Shift Management Button */}
+              {!isAdmin && hasPermission('process_sale') && (
+                <button
+                  onClick={() => setShowShiftModal(true)}
+                  className="flex items-center gap-1 bg-slate-800 text-white hover:bg-slate-900 px-2.5 py-1 rounded-lg text-xs font-semibold shadow-xs transition"
+                >
+                  <Wallet size={13} />
+                  <span className="hidden sm:inline">Shift / Z-Report</span>
+                </button>
+              )}
+            </div>
           </div>
 
+          {/* Phase 5 — designed offline state (not a broken error screen). */}
           {!isOnline && (
-            <div role="status" className="px-4 py-2 bg-amber-50 border-b border-amber-200 text-amber-900 text-sm">
-              You are offline. Sales, inventory, and orders need a server connection; changes are not queued for later sync.
+            <OfflineState lang={lang} pendingCount={syncCount} onReviewOutbox={() => setShowSyncModal(true)} />
+          )}
+          {syncAnnouncement && (
+            <div role="status" aria-live="polite" className="sr-only">
+              {syncAnnouncement}
             </div>
           )}
 
           <div className="flex-1 overflow-auto bg-slate-50 relative">
-            <Suspense fallback={<div className="h-full w-full flex items-center justify-center"><Loader /></div>}>
+            <Suspense
+              fallback={
+                <div className="h-full w-full flex items-center justify-center">
+                  <Loader />
+                </div>
+              }
+            >
               <div key={currentView} className="h-full animate-fade-in">
-                {currentView === 'pos' && hasPermission('process_sale') && <POS lang={lang} onCheckout={handleCheckout} />}
-                {currentView === 'dashboard' && hasPermission('view_reports') && <Dashboard sales={[]} lang={lang} />}
+                {currentView === 'pos' && hasPermission('process_sale') && (
+                  <POS lang={lang} onCheckout={handleCheckout} />
+                )}
+                {currentView === 'dashboard' && hasPermission('view_reports') && (
+                  <Dashboard sales={[]} lang={lang} onNavigate={(view) => setCurrentView(view as any)} />
+                )}
                 {currentView === 'inventory' && hasPermission('manage_inventory') && <Inventory lang={lang} />}
                 {currentView === 'orders' && hasPermission('process_sale') && <StoreOrders lang={lang} />}
-                {currentView === 'dueList' && hasPermission('view_reports') && <DueList sales={[]} lang={lang} onViewInvoice={setLastSale} />}
-                {currentView === 'expenses' && (hasPermission('view_reports') || hasPermission('manage_expenses')) && <Expenses lang={lang} canManage={hasPermission('manage_expenses')} />}
+                {currentView === 'dueList' && hasPermission('view_reports') && (
+                  <DueList sales={[]} lang={lang} onViewInvoice={setLastSale} />
+                )}
+                {currentView === 'expenses' && (hasPermission('view_reports') || hasPermission('manage_expenses')) && (
+                  <Expenses lang={lang} canManage={hasPermission('manage_expenses')} />
+                )}
                 {currentView === 'profile' && <Profile lang={lang} isOwner={permissions === 'all'} />}
                 {currentView === 'admin' && isAdmin && <AdminPanel />}
                 {currentView === 'reports' && hasPermission('view_reports') && <DailyReport lang={lang} />}
-                {currentView === 'tables' && hasPermission('manage_settings') && <TableManager lang={lang} onSelectTableForGuest={(id) => {
-                  setActiveGuestTableId(id);
-                  if (user) setActiveGuestStoreId(user.id);
-                  setCurrentView('guest_menu');
-                }} />}
+                {currentView === 'phase3' && hasPermission('view_reports') && <Phase3Panel lang={lang} />}
+                {currentView === 'tables' && hasPermission('manage_settings') && (
+                  <TableManager
+                    lang={lang}
+                    onSelectTableForGuest={(id) => {
+                      setActiveGuestTableId(id);
+                      if (user) setActiveGuestStoreId(user.id);
+                      setCurrentView('guest_menu');
+                    }}
+                  />
+                )}
                 {currentView === 'kitchen' && hasPermission('manage_restaurant') && <KitchenDisplay lang={lang} />}
 
-                {!hasPermission('process_sale') && currentView === 'pos' && <div className="p-8 text-center text-gray-500">Access Denied</div>}
+                {!hasPermission('process_sale') && currentView === 'pos' && (
+                  <div className="p-8 text-center text-gray-500">Access Denied</div>
+                )}
               </div>
             </Suspense>
           </div>
         </main>
 
+        {showSyncModal && (
+          <Suspense fallback={null}>
+            <SyncReconciliationModal isOpen={showSyncModal} onClose={() => setShowSyncModal(false)} />
+          </Suspense>
+        )}
+
+        {showShiftModal && (
+          <Suspense fallback={null}>
+            <ShiftModal isOpen={showShiftModal} onClose={() => setShowShiftModal(false)} />
+          </Suspense>
+        )}
+
         {lastSale && (
           <Suspense fallback={null}>
-            <Invoice
-              sale={lastSale}
-              lang={lang}
-              onClose={() => setLastSale(null)}
-            />
+            <Invoice sale={lastSale} lang={lang} onClose={() => setLastSale(null)} />
           </Suspense>
         )}
       </div>

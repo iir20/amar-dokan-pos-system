@@ -1,24 +1,75 @@
+# Phase 2 — production, staging, and PR-preview services.
+#
+# NOTE on install: this repo's lockfile is bun.lock (there is no
+# package-lock.json), so `npm ci` cannot work. The build command uses
+# `npm install` (which resolves without a lockfile) — the local supported
+# route is `bun install`. Do not reintroduce `npm ci` until a
+# package-lock.json is committed.
+#
+# PR previews: Render preview environments are enabled per Blueprint in
+# the Render dashboard (Blueprint > Preview Environments > Enable), not
+# by a YAML flag that can be verified from this repo. Once enabled, every
+# pull request gets a preview service + ephemeral database from this same
+# Blueprint; .github/workflows/preview.yml type-checks, tests and builds
+# every PR so a broken preview never merges. The preview URL is the one
+# Render posts on the PR — this repo claims no preview URL of its own.
+
 services:
+  # ---- Production (unchanged behaviour, fixed install command) ----
   - type: web
     name: amar-dokan-pos
     runtime: node
     plan: free
     region: singapore
-    buildCommand: npm ci && npm run build
+    buildCommand: npm install && npm run build
     startCommand: npm start
-    healthCheckPath: /api/global-config
+    healthCheckPath: /api/health
     envVars:
       - key: NODE_ENV
         value: production
       - key: SESSION_SECRET
         generateValue: true
+      # No AMAR_DATA_DIR here on purpose: without a paid persistent disk,
+      # any path is ephemeral anyway. When a disk is added, set
+      # AMAR_DATA_DIR to its mount path (see docs/staging.md).
       - key: DATABASE_URL
         fromDatabase:
           name: amar-dokan-pos-db
           property: connectionString
 
+  # ---- Staging (Phase 2): same code, separate service + database ----
+  # Deploy staging by pushing to the staging branch (or by a manual deploy
+  # of this service in the Render dashboard). Staging is where the
+  # Phase 1 leftover — live PostgreSQL outbox replay — must be proven
+  # before any production reliance (see docs/staging.md, "staging drill").
+  # Staging intentionally has NO demo seed and NO default secrets.
+  - type: web
+    name: amar-dokan-pos-staging
+    runtime: node
+    plan: free
+    region: singapore
+    branch: staging
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: SESSION_SECRET
+        generateValue: true
+      # See the production note above re: AMAR_DATA_DIR / persistent disk.
+      - key: DATABASE_URL
+        fromDatabase:
+          name: amar-dokan-pos-staging-db
+          property: connectionString
+
 databases:
   - name: amar-dokan-pos-db
+    plan: free
+    region: singapore
+    postgresMajorVersion: 16
+
+  - name: amar-dokan-pos-staging-db
     plan: free
     region: singapore
     postgresMajorVersion: 16

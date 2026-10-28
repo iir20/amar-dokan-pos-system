@@ -1,18 +1,17 @@
-
 import { Product, Translation, StoreCategory, GlobalPricingConfig, CategoryPricing } from './types';
 import { ShoppingBasket, Pill, Shirt, Zap, Utensils, Box } from 'lucide-react';
 
 // Immersive 3D Shop Logo for "Amar Dokan"
-export const APP_LOGO = "https://cdn-icons-png.flaticon.com/512/9425/9425785.png";
+export const APP_LOGO = 'https://cdn-icons-png.flaticon.com/512/9425/9425785.png';
 
-// PRODUCTION CONFIG: 
+// PRODUCTION CONFIG:
 // Set to false for standalone PWA usage.
 // Enables fully offline mode without attempting to contact a backend.
-export const ENABLE_CLOUD_SYNC = false; 
+export const ENABLE_CLOUD_SYNC = false;
 
 export const LIMITS = {
-    FREE_PRODUCT_LIMIT: 20,
-    FREE_DAILY_SALES_LIMIT: 10
+  FREE_PRODUCT_LIMIT: 20,
+  FREE_DAILY_SALES_LIMIT: 10,
 };
 
 /**
@@ -22,42 +21,42 @@ export const INITIAL_PRODUCTS: Product[] = [];
 
 // Default pricing structure for standard stores (Grocery, Medicine, etc.)
 const STANDARD_PRICING: CategoryPricing = {
-    monthly: { price: 100, label: 'Monthly', labelBn: 'মাসিক', durationDays: 30 },
-    yearly: { price: 1000, label: 'Yearly', labelBn: 'বাৎসরিক', durationDays: 365 },
-    '2yearly': { price: 1500, label: '2 Years', labelBn: '২ বছর', durationDays: 730 }
+  monthly: { price: 100, label: 'Monthly', labelBn: 'মাসিক', durationDays: 30 },
+  yearly: { price: 1000, label: 'Yearly', labelBn: 'বাৎসরিক', durationDays: 365 },
+  '2yearly': { price: 1500, label: '2 Years', labelBn: '২ বছর', durationDays: 730 },
 };
 
 // Premium pricing for Restaurant (Includes KDS, Tables, QR)
 const RESTAURANT_PRICING: CategoryPricing = {
-    monthly: { price: 300, label: 'Rest. Monthly', labelBn: 'রেস্টুরেন্ট মাসিক', durationDays: 30 },
-    yearly: { price: 3000, label: 'Rest. Yearly', labelBn: 'রেস্টুরেন্ট বাৎসরিক', durationDays: 365 },
-    '2yearly': { price: 5000, label: 'Rest. 2 Years', labelBn: 'রেস্টুরেন্ট ২ বছর', durationDays: 730 }
+  monthly: { price: 300, label: 'Rest. Monthly', labelBn: 'রেস্টুরেন্ট মাসিক', durationDays: 30 },
+  yearly: { price: 3000, label: 'Rest. Yearly', labelBn: 'রেস্টুরেন্ট বাৎসরিক', durationDays: 365 },
+  '2yearly': { price: 5000, label: 'Rest. 2 Years', labelBn: 'রেস্টুরেন্ট ২ বছর', durationDays: 730 },
 };
 
 // Electronics might be slightly higher than grocery due to Warranty/Serial features
 const ELECTRONICS_PRICING: CategoryPricing = {
-    monthly: { price: 150, label: 'Tech Monthly', labelBn: 'টেক মাসিক', durationDays: 30 },
-    yearly: { price: 1500, label: 'Tech Yearly', labelBn: 'টেক বাৎসরিক', durationDays: 365 },
-    '2yearly': { price: 2500, label: 'Tech 2 Years', labelBn: 'টেক ২ বছর', durationDays: 730 }
+  monthly: { price: 150, label: 'Tech Monthly', labelBn: 'টেক মাসিক', durationDays: 30 },
+  yearly: { price: 1500, label: 'Tech Yearly', labelBn: 'টেক বাৎসরিক', durationDays: 365 },
+  '2yearly': { price: 2500, label: 'Tech 2 Years', labelBn: 'টেক ২ বছর', durationDays: 730 },
 };
 
 export const DEFAULT_GLOBAL_PRICING: GlobalPricingConfig = {
-    grocery: STANDARD_PRICING,
-    medicine: STANDARD_PRICING,
-    clothing: STANDARD_PRICING,
-    electronics: ELECTRONICS_PRICING,
-    restaurant: RESTAURANT_PRICING,
-    other: STANDARD_PRICING
+  grocery: STANDARD_PRICING,
+  medicine: STANDARD_PRICING,
+  clothing: STANDARD_PRICING,
+  electronics: ELECTRONICS_PRICING,
+  restaurant: RESTAURANT_PRICING,
+  other: STANDARD_PRICING,
 };
 
 // Store Specific Configuration (Themes & Icons)
-export const STORE_THEMES: Record<StoreCategory, { color: string, icon: any, label: string }> = {
-    grocery: { color: 'emerald', icon: ShoppingBasket, label: 'Grocery Store' },
-    medicine: { color: 'cyan', icon: Pill, label: 'Pharmacy' },
-    clothing: { color: 'violet', icon: Shirt, label: 'Fashion Store' },
-    electronics: { color: 'blue', icon: Zap, label: 'Electronics Shop' },
-    restaurant: { color: 'orange', icon: Utensils, label: 'Restaurant' },
-    other: { color: 'slate', icon: Box, label: 'General Store' }
+export const STORE_THEMES: Record<StoreCategory, { color: string; icon: any; label: string }> = {
+  grocery: { color: 'emerald', icon: ShoppingBasket, label: 'Grocery Store' },
+  medicine: { color: 'cyan', icon: Pill, label: 'Pharmacy' },
+  clothing: { color: 'violet', icon: Shirt, label: 'Fashion Store' },
+  electronics: { color: 'blue', icon: Zap, label: 'Electronics Shop' },
+  restaurant: { color: 'orange', icon: Utensils, label: 'Restaurant' },
+  other: { color: 'slate', icon: Box, label: 'General Store' },
 };
 
 export const TRANSLATIONS: Record<'en' | 'bn', Translation> = {
@@ -200,6 +199,27 @@ export const TRANSLATIONS: Record<'en' | 'bn', Translation> = {
     vsYesterday: 'vs Yesterday',
     performance: 'Store Health',
     totalQuantity: 'Items Sold',
+    depthPanel: 'Depth: Forecast, Suppliers & More',
+    forecast: 'Demand Forecast',
+    forecastBasis: 'Basis (visible rule)',
+    expiryAlerts: 'Expiry Alerts',
+    deadStock: 'Dead Stock',
+    suppliers: 'Suppliers',
+    purchaseOrders: 'Purchase Orders',
+    branches: 'Branches',
+    counters: 'Counters',
+    loyalty: 'Loyalty Points',
+    coupons: 'Coupon Codes',
+    voicePos: 'Voice POS',
+    accountantExports: 'Accountant Exports',
+    supplierDues: 'Supplier Dues (money owed to suppliers)',
+    goodsReceived: 'Goods Received',
+    zReportPerCounter: 'Z-Report per Counter',
+    speakTotal: 'Speak Total',
+    voiceInput: 'Voice Input',
+    voiceUnsupported: 'Voice is not supported on this device — use the text buttons below.',
+    suggestedOrder: 'Suggested Order',
+    createDraftOrder: 'Create Draft Order',
   },
   bn: {
     dashboard: 'ড্যাশবোর্ড',
@@ -340,5 +360,26 @@ export const TRANSLATIONS: Record<'en' | 'bn', Translation> = {
     vsYesterday: 'গতকালের তুলনায়',
     performance: 'দোকানের স্বাস্থ্য',
     totalQuantity: 'মোট বিক্রিত পণ্য',
-  }
+    depthPanel: 'ডেপথ: পূর্বাভাস, সাপ্লায়ার ও আরও',
+    forecast: 'চাহিদার পূর্বাভাস',
+    forecastBasis: 'ভিত্তি (দৃশ্যমান নিয়ম)',
+    expiryAlerts: 'মেয়াদ সতর্কতা',
+    deadStock: 'অচল পণ্য',
+    suppliers: 'সাপ্লায়ার',
+    purchaseOrders: 'ক্রয় অর্ডার',
+    branches: 'শাখা',
+    counters: 'কাউন্টার',
+    loyalty: 'লয়্যালটি পয়েন্ট',
+    coupons: 'কুপন কোড',
+    voicePos: 'ভয়েস POS',
+    accountantExports: 'হিসাবরক্ষক এক্সপোর্ট',
+    supplierDues: 'সাপ্লায়ারের পাওনা (সাপ্লায়ারকে দিতে হবে)',
+    goodsReceived: 'মাল গ্রহণ',
+    zReportPerCounter: 'প্রতি কাউন্টার Z-রিপোর্ট',
+    speakTotal: 'মোট শোনান',
+    voiceInput: 'ভয়েস ইনপুট',
+    voiceUnsupported: 'এই ডিভাইসে ভয়েস সমর্থিত নয় — নিচের লেখা বোতামগুলো ব্যবহার করুন।',
+    suggestedOrder: 'প্রস্তাবিত অর্ডার',
+    createDraftOrder: 'খসড়া অর্ডার তৈরি করুন',
+  },
 };

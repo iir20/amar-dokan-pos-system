@@ -18,13 +18,18 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
 
+      # Phase 2 fix: `npm ci` cannot work — there is no package-lock.json
+      # (bun.lock is the lockfile). `npm install` resolves without one.
       - name: Install dependencies
-        run: npm ci
+        run: npm install
 
       - name: Type-check
         run: npx tsc --noEmit
+
+      # Phase 6: lint joins the deploy gate (same command as ci.yml).
+      - name: Lint
+        run: npm run lint
 
       - name: Run unit tests
         run: npm test

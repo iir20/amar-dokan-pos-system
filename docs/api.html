@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Amar Dokan POS API — API Documentation</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 960px; padding: 0 1rem; color: #1e293b; }
+  h1 { font-size: 1.6rem; } h2 { font-size: 1rem; margin-top: 2rem; }
+  table { width: 100%; border-collapse: collapse; margin-top: 0.5rem; }
+  th, td { text-align: left; padding: 0.5rem; border-bottom: 1px solid #e2e8f0; vertical-align: top; font-size: 0.9rem; }
+  th { background: #f8fafc; }
+  .method { color: #fff; font-size: 0.7rem; font-weight: 700; padding: 0.15rem 0.4rem; border-radius: 4px; }
+  .desc { color: #475569; }
+  code { background: #f1f5f9; padding: 0.1rem 0.3rem; border-radius: 4px; }
+  .note { background: #fefce8; border: 1px solid #fde68a; padding: 0.75rem 1rem; border-radius: 8px; font-size: 0.9rem; }
+</style>
+</head>
+<body>
+<h1>Amar Dokan POS API</h1>
+<p>RESTful API for Amar Dokan POS, inventory, restaurant management, and multi-store marketplace. Phase 6 adds server-side barcode lookup, bulk inventory actions, inventory movement logs and the owner profile endpoints documented here. Note: this spec documents the most-used routes; the full route list lives in server/routes.ts.</p>
+<p class="note">Generated from <code>server/openapi.json</code> — run <code>npm run docs:api</code> after editing the spec. Served live at <code>/docs</code>; raw spec at <code>/api/openapi.json</code>.</p>
+<h2><code>/admin/backups/export</code></h2><table><thead><tr><th>Method</th><th>Path</th><th>Summary</th><th>Responses</th></tr></thead><tbody><tr>
+          <td><span class="method" style="background:#0f766e">GET</span></td>
+          <td><code>/admin/backups/export</code></td>
+          <td><strong>Export complete JSON backup of store records</strong></td>
+          <td><code>200</code> Store database backup dump</td>
+        </tr></tbody></table>
+<h2><code>/admin/sync/replay</code></h2><table><thead><tr><th>Method</th><th>Path</th><th>Summary</th><th>Responses</th></tr></thead><tbody><tr>
+          <td><span class="method" style="background:#1d4ed8">POST</span></td>
+          <td><code>/admin/sync/replay</code></td>
+          <td><strong>Replay the disk outbox into PostgreSQL now</strong><br><span class="desc">Platform-admin session required. No-op (with reason) when no database is configured. Live PostgreSQL replay is still UNVERIFIED in staging — see docs/staging.md.</span></td>
+          <td><code>200</code> Replay counts<br><code>401</code> Not authenticated<br><code>403</code> Not a platform admin</td>
+        </tr></tbody></table>
+<h2><code>/admin/system-status</code></h2><table><thead><tr><th>Method</th><th>Path</th><th>Summary</th><th>Responses</th></tr></thead><tbody><tr>
+          <td><span class="method" style="background:#0f766e">GET</span></td>
+          <td><code>/admin/system-status</code></td>
+          <td><strong>Admin system status (Phase 2)</strong><br><span class="desc">Platform-admin session required. Live database ping, fallback mode, server outbox depth, last backup-export time, and error-tracking configured/enabled booleans (the DSN itself is never exposed). Backs the Admin Panel 'System Status' tab.</span></td>
+          <td><code>200</code> System status object<br><code>401</code> Not authenticated<br><code>403</code> Not a platform admin</td>
+        </tr></tbody></table>
+<h2><code>/auth/login</code></h2><table><thead><tr><th>Method</th><th>Path</th><th>Summary</th><th>Responses</th></tr></thead><tbody><tr>
+          <td><span class="method" style="background:#1d4ed8">POST</span></td>
+          <td><code>/auth/login</code></td>
+          <td><strong>User &amp; Staff Login</strong></td>
+          <td><code>200</code> Authenticated session created<br><code>401</code> Invalid credentials</td>
+        </tr></tbody></table>
+<h2><code>/auth/me</code></h2><table><thead><tr><th>Method</th><th>Path</th><th>Summary</th><th>Responses</th></tr></thead><tbody><tr>
+          <td><span class="method" style="background:#0f766e">GET</span></td>
+          <td><code>/auth/me</code></td>
+          <td><strong>Current Session Context</strong></td>
+          <td><code>200</code> Active session role and user details</td>
+        </tr></tbody></table>
+<h2><code>/branches</code></h2><table><thead><tr><th>Method</th><th>Path</th><th>Summary</th><th>Responses</th></tr></thead><tbody><tr>
+          <td><span class="method" style="background:#0f766e">GET</span></td>
+          <td><code>/branches</code></td>
+          <td><strong>List branches</strong><br><span class="desc">Branches of the current store.</span></td>
+          <td><code>200</code> Branch list</td>
+        </tr>
+<tr>
+          <td><span class="method" style="background:#1d4ed8">POST</span></td>
+          <td><code>/branches</code></td>
+          <td><strong>Create branch</strong><br><span class="desc">Create a branch. The first branch becomes the default. Requires manage_settings.</span></td>
+          <td><code>201</code> Branch created</td>
+        </tr></tbody></table>
+<h2><code>/branches/{id}/products</code></h2><table><thead><tr><th>Method</th><th>Path</th><th>Summary</th><th>Responses</th></tr></thead><tbody><tr>
+          <td><span class="method" style="background:#0f766e">GET</span></td>
+          <td><code>/branches/{id}/products</code></td>
+          <td><strong>Branch products</strong><br><span class="desc">Products scoped to one branch; another branch stock does not leak in.</span></td>
+          <td><code>200</code> Branch products</td>
+        </tr></tbody></table>
+<h2><code>/branches/{id}/sales</code></h2><table><thead><tr><th>Method</th><th>Path</th><th>Summary</th><th>Responses</th></tr></thead><tbody><tr>
+          <td><span class="method" style="background:#0f766e">GET</span></td>
+          <td><code>/branches/{id}/sales</code></td>
+          <td><strong>Branch sales</strong><br><span class="desc">Sales scoped to one branch.</span></td>
+          <td><code>200</code> Branch sales</td>
+        </tr></tbody></table>
+<h2><code>/counters</code></h2><table><thead><tr><th>Method</th><th>Path</th><th>Summary</th><th>Responses</th></tr></thead><tbody><tr>
+          <td><span class="method" style="background:#1d4ed8">POST</span></td>
+          <td><code>/counters</code></td>
+          <td><strong>Create counter</strong><br><span class="desc">Create a counter inside a branch. Requires manage_settings.</span></td>
+          <td><code>201</code> Counter created</td>
+        </tr></tbody></table>
+<h2><code>/coupons</code></h2><table><thead><tr><th>Method</th><th>Path</th><th>Summary</th><th>Responses</th></tr></thead><tbody><tr>
+          <td><span class="method" style="background:#0f766e">GET</span></td>
+          <td><code>/coupons</code></td>
+          <td><strong>List coupons</strong><br><span class="desc">Owner-created coupon codes.</span></td>
+          <td><code>200</code> Coupon list</td>
+        </tr>
+<tr>
+          <td><span class="method" style="background:#1d4ed8">POST</span></td>
+          <td><code>/coupons</code></td>
+          <td><strong>Create coupon</strong><br><span class="desc">Owner only. Validation happens server-side at sale time; client discounts are never trusted.</span></td>
+          <td><code>201</code> Coupon created</td>
+        </tr></tbody></table>
+<h2><code>/health</code></h2><table><thead><tr><th>Method</th><th>Path</th><th>Summary</th><th>Responses</th></tr></thead><tbody><tr>
+          <td><span class="method" style="background:#0f766e">GET</span></td>
+          <td><code>/health</code></td>
+          <td><strong>System Health Check</strong><br><span class="desc">Returns operational status, database connectivity, and session store availability.</span></td>
+          <td><code>200</code> Service healthy<br><code>503</code> Service degraded</td>
+        </tr></tbody></table>
+<h2><code>/insights/dead-stock</code></h2><table><thead><tr><th>Method</th><th>Path</th><th>Summary</th><th>Responses</th></tr></thead><tbody><tr>
+          <td><span class="method" style="background:#0f766e">GET</span></td>
+          <td><code>/insights/dead-stock</code></td>
+          <td><strong>Dead stock suggestions</strong><br><span class="desc">Products with stock but no sales in the window (default 90 days, configurable) with a discount/clearance suggested action.</span></td>
+          <td><code>200</code> Dead stock list</td>
+        </tr></tbody></table>
+<h2><code>/insights/expiry</code></h2><table><thead><tr><th>Method</th><th>Path</th><th>Summary</th><th>Responses</th></tr></thead><tbody><tr>
+          <td><span class="method" style="background:#0f766e">GET</span></td>
+          <td><code>/insights/expiry</code></td>
+          <td><strong>Medicine expiry alerts</strong><br><span class="desc">Products with expiry dates, alerted at 30, 14 and 7 days before expiry with severity by nearness (watch/warning/critical/expired).</span></td>
+          <td><code>200</code> Expiry alerts</td>
+        </tr></tbody></table>
+<h2><code>/insights/forecast</code></h2><table><thead><tr><th>Method</th><th>Path</th><th>Summary</th><th>Responses</th></tr></thead><tbody><tr>
+          <td><span class="method" style="background:#0f766e">GET</span></td>
+          <td><code>/insights/forecast</code></td>
+          <td><strong>Demand forecast</strong><br><span class="desc">Per-product forecast from real sales history. Response shows windowDays, leadTimeDays, the rule used, and the visible basis per product: suggested = ceil(avg daily sales over last N days x lead-time days - current stock), minimum 0.</span></td>
+          <td><code>200</code> Forecast list with visible basis</td>
+        </tr></tbody></table>
+<h2><code>/inventory-logs</code></h2><table><thead><tr><th>Method</th><th>Path</th><th>Summary</th><th>Responses</th></tr></thead><tbody><tr>
+          <td><span class="method" style="background:#0f766e">GET</span></td>
+          <td><code>/inventory-logs</code></td>
+          <td><strong>Stock movement history for the caller's store</strong><br><span class="desc">Phase 6 surface (route predates Phase 6): every product create/stock change and sale writes a log entry (in/out/adjustment/sale) with reason and actor; the Inventory screen's per-product History panel reads this endpoint and filters by productId.</span></td>
+          <td><code>200</code> Inventory log entries, newest first</td>
+        </tr></tbody></table>
+<h2><code>/loyalty</code></h2><table><thead><tr><th>Method</th><th>Path</th><th>Summary</th><th>Responses</th></tr></thead><tbody><tr>
+          <td><span class="method" style="background:#0f766e">GET</span></td>
+          <td><code>/loyalty</code></td>
+          <td><strong>Loyalty accounts</strong><br><span class="desc">Points per customer phone: 1 point per full 100 taka, 1 point = 1 taka when redeemed, capped by balance and bill server-side.</span></td>
+          <td><code>200</code> Loyalty accounts</td>
+        </tr></tbody></table>
+<h2><code>/marketplace/orders</code></h2><table><thead><tr><th>Method</th><th>Path</th><th>Summary</th><th>Responses</th></tr></thead><tbody><tr>
+          <td><span class="method" style="background:#1d4ed8">POST</span></td>
+          <td><code>/marketplace/orders</code></td>
+          <td><strong>Place a marketplace order (server prices, transactional stock deduct)</strong><br><span class="desc">Customer session required. Prices are taken from the server's products, never the client's totals; stock is deducted transactionally and restocked on cancellation. Requires a UUID v4 idempotencyKey (the order id).</span></td>
+          <td><code>201</code> Created order<br><code>400</code> Invalid order / idempotency key</td>
+        </tr></tbody></table>
+<h2><code>/payments/verify-gateway</code></h2><table><thead><tr><th>Method</th><th>Path</th><th>Summary</th><th>Responses</th></tr></thead><tbody><tr>
+          <td><span class="method" style="background:#1d4ed8">POST</span></td>
+          <td><code>/payments/verify-gateway</code></td>
+          <td><strong>Format-check a bKash / Nagad transaction id (NOT a verification)</strong><br><span class="desc">Phase 1 honesty fix: this endpoint never contacts any gateway and verifies nothing. It only checks the transaction-id format. Do not treat its response as proof of payment. See docs/gateway-callback-spec.md.</span></td>
+          <td><code>200</code> Format-check result with gatewayVerified:false</td>
+        </tr></tbody></table>
+<h2><code>/products</code></h2><table><thead><tr><th>Method</th><th>Path</th><th>Summary</th><th>Responses</th></tr></thead><tbody><tr>
+          <td><span class="method" style="background:#0f766e">GET</span></td>
+          <td><code>/products</code></td>
+          <td><strong>List store products</strong></td>
+          <td><code>200</code> List of products</td>
+        </tr>
+<tr>
+          <td><span class="method" style="background:#1d4ed8">POST</span></td>
+          <td><code>/products</code></td>
+          <td><strong>Create or update product</strong></td>
+          <td><code>200</code> Saved product</td>
+        </tr></tbody></table>
+<h2><code>/products/barcode/{code}</code></h2><table><thead><tr><th>Method</th><th>Path</th><th>Summary</th><th>Responses</th></tr></thead><tbody><tr>
+          <td><span class="method" style="background:#0f766e">GET</span></td>
+          <td><code>/products/barcode/{code}</code></td>
+          <td><strong>Look up one product by printed barcode (own store only)</strong><br><span class="desc">Phase 6. Exact match on the product's barcode field, scoped to the caller's store. 404 PRODUCT_NOT_FOUND when no product in this store carries the code.</span></td>
+          <td><code>200</code> The matching product<br><code>400</code> Invalid barcode<br><code>404</code> No product with that barcode in this store</td>
+        </tr></tbody></table>
+<h2><code>/products/bulk</code></h2><table><thead><tr><th>Method</th><th>Path</th><th>Summary</th><th>Responses</th></tr></thead><tbody><tr>
+          <td><span class="method" style="background:#1d4ed8">POST</span></td>
+          <td><code>/products/bulk</code></td>
+          <td><strong>Bulk inventory actions: adjust stock, set price, delete</strong><br><span class="desc">Phase 6. Body: { ids (1-500), action: adjust-stock|set-price|delete, delta (adjust-stock, integer), price (set-price, &gt;= 0), confirmed: true (delete only) }. Stock can never go negative; per-product skips are reported as { id, reason } and never hidden.</span></td>
+          <td><code>200</code> { updated, deleted, skipped: [{ id, reason }] }<br><code>400</code> Invalid bulk request (incl. DELETE_NOT_CONFIRMED)</td>
+        </tr></tbody></table>
+<h2><code>/profile</code></h2><table><thead><tr><th>Method</th><th>Path</th><th>Summary</th><th>Responses</th></tr></thead><tbody><tr>
+          <td><span class="method" style="background:#b45309">PUT</span></td>
+          <td><code>/profile</code></td>
+          <td><strong>Update the owner profile</strong><br><span class="desc">Owner only. Accepts storeName, storeCategory, address, phone, zila, upozila, thana, profilePicture, defaultVatRate (0-100) and a new pin (hashed server-side). Phase 6: the Profile screen now displays and edits zila/upozila/thana, which the API already carried but the UI never rendered.</span></td>
+          <td><code>200</code> The updated public user (pin never returned)<br><code>400</code> Invalid VAT rate or PIN</td>
+        </tr></tbody></table>
+<h2><code>/public/guest-orders</code></h2><table><thead><tr><th>Method</th><th>Path</th><th>Summary</th><th>Responses</th></tr></thead><tbody><tr>
+          <td><span class="method" style="background:#1d4ed8">POST</span></td>
+          <td><code>/public/guest-orders</code></td>
+          <td><strong>Place a QR guest order (idempotent)</strong><br><span class="desc">No session required (QR table link). Requires an idempotencyKey; replaying the same key returns the original order instead of creating a duplicate.</span></td>
+          <td><code>201</code> Created guest order<br><code>400</code> Invalid idempotency key</td>
+        </tr></tbody></table>
+<h2><code>/purchase-orders</code></h2><table><thead><tr><th>Method</th><th>Path</th><th>Summary</th><th>Responses</th></tr></thead><tbody><tr>
+          <td><span class="method" style="background:#0f766e">GET</span></td>
+          <td><code>/purchase-orders</code></td>
+          <td><strong>List purchase orders</strong><br><span class="desc">Draft/partial/received/cancelled purchase orders.</span></td>
+          <td><code>200</code> Purchase order list</td>
+        </tr>
+<tr>
+          <td><span class="method" style="background:#1d4ed8">POST</span></td>
+          <td><code>/purchase-orders</code></td>
+          <td><strong>Create draft purchase order</strong><br><span class="desc">Suggestions become draft orders the owner reviews before anything is ordered. Nothing is ordered by creating a draft.</span></td>
+          <td><code>201</code> Draft purchase order</td>
+        </tr></tbody></table>
+<h2><code>/purchase-orders/{id}/cancel</code></h2><table><thead><tr><th>Method</th><th>Path</th><th>Summary</th><th>Responses</th></tr></thead><tbody><tr>
+          <td><span class="method" style="background:#1d4ed8">POST</span></td>
+          <td><code>/purchase-orders/{id}/cancel</code></td>
+          <td><strong>Cancel draft purchase order</strong><br><span class="desc">Only a draft can be cancelled.</span></td>
+          <td><code>200</code> Cancelled purchase order</td>
+        </tr></tbody></table>
+<h2><code>/purchase-orders/{id}/receive</code></h2><table><thead><tr><th>Method</th><th>Path</th><th>Summary</th><th>Responses</th></tr></thead><tbody><tr>
+          <td><span class="method" style="background:#1d4ed8">POST</span></td>
+          <td><code>/purchase-orders/{id}/receive</code></td>
+          <td><strong>Goods received</strong><br><span class="desc">Receives goods: updates stock, writes inventory-log entries, and raises the supplier due by the received value.</span></td>
+          <td><code>200</code> Updated purchase order</td>
+        </tr></tbody></table>
+<h2><code>/reports/excel.csv</code></h2><table><thead><tr><th>Method</th><th>Path</th><th>Summary</th><th>Responses</th></tr></thead><tbody><tr>
+          <td><span class="method" style="background:#0f766e">GET</span></td>
+          <td><code>/reports/excel.csv</code></td>
+          <td><strong>Accountant export (CSV)</strong><br><span class="desc">Combined VAT + profit-by-category + staff-performance CSV; opens in Excel. This is CSV, not a native .xlsx file.</span></td>
+          <td><code>200</code> CSV file</td>
+        </tr></tbody></table>
+<h2><code>/reports/full-export</code></h2><table><thead><tr><th>Method</th><th>Path</th><th>Summary</th><th>Responses</th></tr></thead><tbody><tr>
+          <td><span class="method" style="background:#0f766e">GET</span></td>
+          <td><code>/reports/full-export</code></td>
+          <td><strong>Full data export (JSON)</strong><br><span class="desc">Owner-scoped export. Contains no PIN verifiers.</span></td>
+          <td><code>200</code> Export JSON</td>
+        </tr></tbody></table>
+<h2><code>/reports/import</code></h2><table><thead><tr><th>Method</th><th>Path</th><th>Summary</th><th>Responses</th></tr></thead><tbody><tr>
+          <td><span class="method" style="background:#1d4ed8">POST</span></td>
+          <td><code>/reports/import</code></td>
+          <td><strong>Validated data import</strong><br><span class="desc">Imports reference data only (products, suppliers, coupons, branches, counters). Sales and expenses are counted as skipped and never imported, so money records are never silently overwritten. Response reports counts, imported, skips and errors.</span></td>
+          <td><code>200</code> Import report</td>
+        </tr></tbody></table>
+<h2><code>/reports/profit-by-category.csv</code></h2><table><thead><tr><th>Method</th><th>Path</th><th>Summary</th><th>Responses</th></tr></thead><tbody><tr>
+          <td><span class="method" style="background:#0f766e">GET</span></td>
+          <td><code>/reports/profit-by-category.csv</code></td>
+          <td><strong>Profit by category (CSV)</strong><br><span class="desc">CSV export that opens in Excel.</span></td>
+          <td><code>200</code> CSV file</td>
+        </tr></tbody></table>
+<h2><code>/reports/staff-performance.csv</code></h2><table><thead><tr><th>Method</th><th>Path</th><th>Summary</th><th>Responses</th></tr></thead><tbody><tr>
+          <td><span class="method" style="background:#0f766e">GET</span></td>
+          <td><code>/reports/staff-performance.csv</code></td>
+          <td><strong>Staff performance (CSV)</strong><br><span class="desc">CSV export that opens in Excel.</span></td>
+          <td><code>200</code> CSV file</td>
+        </tr></tbody></table>
+<h2><code>/reports/vat.csv</code></h2><table><thead><tr><th>Method</th><th>Path</th><th>Summary</th><th>Responses</th></tr></thead><tbody><tr>
+          <td><span class="method" style="background:#0f766e">GET</span></td>
+          <td><code>/reports/vat.csv</code></td>
+          <td><strong>VAT report (CSV)</strong><br><span class="desc">CSV export that opens in Excel.</span></td>
+          <td><code>200</code> CSV file</td>
+        </tr></tbody></table>
+<h2><code>/restaurant/guest-orders/{id}/settle</code></h2><table><thead><tr><th>Method</th><th>Path</th><th>Summary</th><th>Responses</th></tr></thead><tbody><tr>
+          <td><span class="method" style="background:#1d4ed8">POST</span></td>
+          <td><code>/restaurant/guest-orders/{id}/settle</code></td>
+          <td><strong>Settle a dining table guest order (AmarPay)</strong></td>
+          <td><code>200</code> Order settled and sale created</td>
+        </tr></tbody></table>
+<h2><code>/sales</code></h2><table><thead><tr><th>Method</th><th>Path</th><th>Summary</th><th>Responses</th></tr></thead><tbody><tr>
+          <td><span class="method" style="background:#0f766e">GET</span></td>
+          <td><code>/sales</code></td>
+          <td><strong>List completed sales</strong></td>
+          <td><code>200</code> List of sales</td>
+        </tr>
+<tr>
+          <td><span class="method" style="background:#1d4ed8">POST</span></td>
+          <td><code>/sales</code></td>
+          <td><strong>Process a sale with transactional stock deduct</strong></td>
+          <td><code>201</code> Sale completed</td>
+        </tr></tbody></table>
+<h2><code>/shifts/{id}/close</code></h2><table><thead><tr><th>Method</th><th>Path</th><th>Summary</th><th>Responses</th></tr></thead><tbody><tr>
+          <td><span class="method" style="background:#1d4ed8">POST</span></td>
+          <td><code>/shifts/{id}/close</code></td>
+          <td><strong>Close cashier shift with discrepancy audit</strong></td>
+          <td><code>200</code> Closed shift summary</td>
+        </tr></tbody></table>
+<h2><code>/shifts/current</code></h2><table><thead><tr><th>Method</th><th>Path</th><th>Summary</th><th>Responses</th></tr></thead><tbody><tr>
+          <td><span class="method" style="background:#0f766e">GET</span></td>
+          <td><code>/shifts/current</code></td>
+          <td><strong>Get current active cashier shift</strong></td>
+          <td><code>200</code> Shift object or null</td>
+        </tr></tbody></table>
+<h2><code>/shifts/open</code></h2><table><thead><tr><th>Method</th><th>Path</th><th>Summary</th><th>Responses</th></tr></thead><tbody><tr>
+          <td><span class="method" style="background:#1d4ed8">POST</span></td>
+          <td><code>/shifts/open</code></td>
+          <td><strong>Open a new cashier shift</strong></td>
+          <td><code>201</code> Opened shift</td>
+        </tr></tbody></table>
+<h2><code>/shifts/z-report</code></h2><table><thead><tr><th>Method</th><th>Path</th><th>Summary</th><th>Responses</th></tr></thead><tbody><tr>
+          <td><span class="method" style="background:#0f766e">GET</span></td>
+          <td><code>/shifts/z-report</code></td>
+          <td><strong>Z-report per counter</strong><br><span class="desc">Closed-shift totals grouped per counter: expected cash, actual cash, discrepancy, per counter.</span></td>
+          <td><code>200</code> Per-counter Z-report</td>
+        </tr></tbody></table>
+<h2><code>/suppliers</code></h2><table><thead><tr><th>Method</th><th>Path</th><th>Summary</th><th>Responses</th></tr></thead><tbody><tr>
+          <td><span class="method" style="background:#0f766e">GET</span></td>
+          <td><code>/suppliers</code></td>
+          <td><strong>List suppliers</strong><br><span class="desc">Suppliers with totalDue (money owed).</span></td>
+          <td><code>200</code> Supplier list</td>
+        </tr>
+<tr>
+          <td><span class="method" style="background:#1d4ed8">POST</span></td>
+          <td><code>/suppliers</code></td>
+          <td><strong>Create supplier</strong><br><span class="desc">Create a supplier. Requires manage_inventory.</span></td>
+          <td><code>201</code> Supplier created</td>
+        </tr></tbody></table>
+<h2><code>/suppliers/{id}/pay</code></h2><table><thead><tr><th>Method</th><th>Path</th><th>Summary</th><th>Responses</th></tr></thead><tbody><tr>
+          <td><span class="method" style="background:#1d4ed8">POST</span></td>
+          <td><code>/suppliers/{id}/pay</code></td>
+          <td><strong>Pay supplier</strong><br><span class="desc">Reduces the supplier due and records a supplier_payment expense.</span></td>
+          <td><code>200</code> Updated supplier</td>
+        </tr></tbody></table>
+<h2><code>/suppliers/dues-total</code></h2><table><thead><tr><th>Method</th><th>Path</th><th>Summary</th><th>Responses</th></tr></thead><tbody><tr>
+          <td><span class="method" style="background:#0f766e">GET</span></td>
+          <td><code>/suppliers/dues-total</code></td>
+          <td><strong>Total supplier dues</strong><br><span class="desc">Sum of money owed to all suppliers of the store; shown on the Due List.</span></td>
+          <td><code>200</code> Total due</td>
+        </tr></tbody></table>
+<h2><code>/sync/status</code></h2><table><thead><tr><th>Method</th><th>Path</th><th>Summary</th><th>Responses</th></tr></thead><tbody><tr>
+          <td><span class="method" style="background:#0f766e">GET</span></td>
+          <td><code>/sync/status</code></td>
+          <td><strong>Sync status: database state + server outbox depth</strong><br><span class="desc">Owner/staff session required. Same live sources as /health, plus fallback mode.</span></td>
+          <td><code>200</code> Sync status object<br><code>401</code> Not authenticated</td>
+        </tr></tbody></table>
+<p><small>OpenAPI 3.0.3 · spec version 3.0.0-phase6</small></p>
+</body>
+</html>

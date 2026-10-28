@@ -4,10 +4,12 @@ import { StorageService } from '../services/storage';
 import { useApiData } from '../hooks/useApiData';
 import { Store, DollarSign, Calendar, CreditCard, Loader2, Settings as SettingsIcon, Save, Filter, Search, Tag, Megaphone, Upload, Trash2, Plus, Users, Image as ImageIcon, TrendingUp, PieChart, Download, LockKeyhole, Unlock, KeyRound, X, ArrowUpDown, MapPin } from 'lucide-react';
 import { GlobalPricingConfig, StoreCategory, GlobalConfig, Announcement, CategoryPricing, User } from '../types';
+// Phase 2 — admin system-status view (live DB state, sync queue, last backup).
+import SystemStatus from './SystemStatus';
 import { DEFAULT_GLOBAL_PRICING, APP_LOGO } from '../constants';
 
 const AdminPanel: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'requests' | 'users' | 'sales' | 'settings' | 'system' | 'announcements'>('requests');
+  const [activeTab, setActiveTab] = useState<'requests' | 'users' | 'sales' | 'settings' | 'system' | 'status' | 'announcements'>('requests');
   const [processingId, setProcessingId] = useState<string | null>(null);
   
   // Realtime Data
@@ -375,6 +377,7 @@ const AdminPanel: React.FC = () => {
           <button onClick={() => setActiveTab('sales')} className={`pb-2 px-4 font-medium transition whitespace-nowrap ${activeTab === 'sales' ? 'border-b-2 border-slate-800 text-slate-800' : 'text-slate-500'}`}>Sales Analysis</button>
           <button onClick={() => setActiveTab('settings')} className={`pb-2 px-4 font-medium transition whitespace-nowrap flex items-center gap-2 ${activeTab === 'settings' ? 'border-b-2 border-slate-800 text-slate-800' : 'text-slate-500'}`}><SettingsIcon size={16} /> Pricing</button>
           <button onClick={() => setActiveTab('system')} className={`pb-2 px-4 font-medium transition whitespace-nowrap flex items-center gap-2 ${activeTab === 'system' ? 'border-b-2 border-slate-800 text-slate-800' : 'text-slate-500'}`}><Store size={16} /> Branding</button>
+          <button data-testid="admin-tab-status" onClick={() => setActiveTab('status')} className={`pb-2 px-4 font-medium transition whitespace-nowrap ${activeTab === 'status' ? 'border-b-2 border-slate-800 text-slate-800' : 'text-slate-500'}`}>System Status</button>
           <button onClick={() => setActiveTab('announcements')} className={`pb-2 px-4 font-medium transition whitespace-nowrap flex items-center gap-2 ${activeTab === 'announcements' ? 'border-b-2 border-slate-800 text-slate-800' : 'text-slate-500'}`}><Megaphone size={16} /> Notices</button>
       </div>
 
@@ -687,6 +690,10 @@ const AdminPanel: React.FC = () => {
                       </div>
                   </form>
               </div>
+          )}
+
+          {activeTab === 'status' && (
+              <SystemStatus />
           )}
 
           {activeTab === 'announcements' && (

@@ -3,11 +3,19 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 
+// Phase 2 — Capacitor builds MUST NOT register the PWA service worker:
+// the native shell's offline story is AmarSync (localStorage outbox), and
+// a Workbox cache inside the WebView would double-cache app assets and
+// fight it (stale shells, API responses cached by the SW). When
+// CAPACITOR_BUILD=true the VitePWA plugin is omitted entirely, so the
+// native `dist` contains no sw.js at all. Web builds are unchanged.
+const isCapacitorBuild = process.env.CAPACITOR_BUILD === 'true';
+
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [
     react(),
-    VitePWA({
+    ...(isCapacitorBuild ? [] : [VitePWA({
       registerType: 'autoUpdate',
       // Removed includeAssets for non-existent files to prevent 404s in production build
       // includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'mask-icon.svg'],
@@ -125,18 +133,18 @@ export default defineConfig({
             }
         ]
       }
-    })
+    })])
   ],
-  base: '/', 
+  base: '/',
   server: {
     host: '0.0.0.0',
-    port: 5000,
+    port: 3000,
     strictPort: true,
     allowedHosts: true,
   },
   preview: {
     host: '0.0.0.0',
-    port: 5000,
+    port: 3000,
     strictPort: true,
     allowedHosts: true,
   },

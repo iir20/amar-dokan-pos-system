@@ -45,5 +45,5 @@ seed().catch((error) => {
   console.error(error instanceof Error ? error.message : 'Owner bootstrap failed.');
   process.exitCode = 1;
 }).finally(() => {
-  void pool.end();
+  void pool?.end();
 });

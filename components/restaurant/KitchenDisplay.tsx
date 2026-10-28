@@ -1,10 +1,11 @@
 
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useApiData } from '../../hooks/useApiData';
 import { Language, GuestOrder, OrderStatus } from '../../types';
 import { TRANSLATIONS } from '../../constants';
-import { Clock, CheckCircle2, ChefHat, Bell, Utensils, XCircle } from 'lucide-react';
+import { Clock, CheckCircle2, ChefHat, Bell, Utensils, XCircle, CreditCard } from 'lucide-react';
 import { StorageService } from '../../services/storage';
+import RestaurantSettlementModal from './RestaurantSettlementModal';
 
 interface KitchenDisplayProps {
   lang: Language;
@@ -12,6 +13,7 @@ interface KitchenDisplayProps {
 
 const KitchenDisplay: React.FC<KitchenDisplayProps> = ({ lang }) => {
   const t = TRANSLATIONS[lang];
+  const [settlingOrder, setSettlingOrder] = useState<GuestOrder | null>(null);
   // Filter out served/cancelled orders to keep display clean
   const { data: ordersData, loading, error, refetch: refetchOrders } = useApiData(() => StorageService.getGuestOrders(), []);
   useEffect(() => {
@@ -70,7 +72,7 @@ const KitchenDisplay: React.FC<KitchenDisplayProps> = ({ lang }) => {
           )}
 
           {orders.map(order => (
-              <div key={order.id} className={`bg-white rounded-xl shadow-sm border-2 overflow-hidden flex flex-col ${
+              <div key={order.id} data-testid={`kds-order-${order.id}`} className={`bg-white rounded-xl shadow-sm border-2 overflow-hidden flex flex-col ${
                   order.status === 'pending' ? 'border-yellow-400 animate-pulse-slow' : 'border-transparent'
               }`}>
                   {/* Header */}
@@ -126,26 +128,49 @@ const KitchenDisplay: React.FC<KitchenDisplayProps> = ({ lang }) => {
                   </div>
 
                   {/* Actions */}
-                  <div className="p-3 bg-gray-50 border-t grid grid-cols-2 gap-2">
-                      {order.status === 'pending' && (
-                          <>
-                              <button onClick={() => updateStatus(order.id, 'cancelled')} className="col-span-1 py-2 bg-red-100 text-red-700 rounded-lg text-xs font-bold hover:bg-red-200">Reject</button>
-                              <button onClick={() => updateStatus(order.id, 'accepted')} className="col-span-1 py-2 bg-blue-600 text-white rounded-lg text-xs font-bold hover:bg-blue-700">Accept</button>
-                          </>
-                      )}
-                      {order.status === 'accepted' && (
-                          <button onClick={() => updateStatus(order.id, 'preparing')} className="col-span-2 py-2 bg-orange-500 text-white rounded-lg text-sm font-bold hover:bg-orange-600">Start Cooking 👨‍🍳</button>
-                      )}
-                      {order.status === 'preparing' && (
-                          <button onClick={() => updateStatus(order.id, 'ready')} className="col-span-2 py-2 bg-green-500 text-white rounded-lg text-sm font-bold hover:bg-green-600">Mark Ready ✅</button>
-                      )}
-                      {order.status === 'ready' && (
-                          <button onClick={() => updateStatus(order.id, 'served')} className="col-span-2 py-2 bg-gray-800 text-white rounded-lg text-sm font-bold hover:bg-gray-900">Mark Served 🍽️</button>
-                      )}
+                  <div className="p-3 bg-gray-50 border-t flex flex-col gap-2">
+                      <div className="grid grid-cols-2 gap-2">
+                        {order.status === 'pending' && (
+                            <>
+                                <button onClick={() => updateStatus(order.id, 'cancelled')} className="col-span-1 py-2 bg-red-100 text-red-700 rounded-lg text-xs font-bold hover:bg-red-200">Reject</button>
+                                <button onClick={() => updateStatus(order.id, 'accepted')} className="col-span-1 py-2 bg-blue-600 text-white rounded-lg text-xs font-bold hover:bg-blue-700">Accept</button>
+                            </>
+                        )}
+                        {order.status === 'accepted' && (
+                            <button onClick={() => updateStatus(order.id, 'preparing')} className="col-span-2 py-2 bg-orange-500 text-white rounded-lg text-sm font-bold hover:bg-orange-600">Start Cooking 👨‍🍳</button>
+                        )}
+                        {order.status === 'preparing' && (
+                            <button onClick={() => updateStatus(order.id, 'ready')} className="col-span-2 py-2 bg-green-500 text-white rounded-lg text-sm font-bold hover:bg-green-600">Mark Ready ✅</button>
+                        )}
+                        {order.status === 'ready' && (
+                            <button onClick={() => updateStatus(order.id, 'served')} className="col-span-2 py-2 bg-gray-800 text-white rounded-lg text-sm font-bold hover:bg-gray-900">Mark Served 🍽️</button>
+                        )}
+                      </div>
+
+                      {/* AmarPay Dining Bill Settlement Button */}
+                      <button
+                        data-testid={`kds-settle-${order.id}`}
+                        onClick={() => setSettlingOrder(order)}
+                        className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-xs transition"
+                      >
+                        <CreditCard size={14} /> Settle Bill / AmarPay
+                      </button>
                   </div>
               </div>
           ))}
       </div>
+
+      {settlingOrder && (
+        <RestaurantSettlementModal
+          lang={lang}
+          order={settlingOrder}
+          onClose={() => setSettlingOrder(null)}
+          onSettled={() => {
+            setSettlingOrder(null);
+            refetchOrders();
+          }}
+        />
+      )}
     </div>
   );
 };

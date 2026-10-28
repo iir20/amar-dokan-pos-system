@@ -1,0 +1,589 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Amar Dokan POS API",
+    "version": "3.0.0-phase6",
+    "description": "RESTful API for Amar Dokan POS, inventory, restaurant management, and multi-store marketplace. Phase 6 adds server-side barcode lookup, bulk inventory actions, inventory movement logs and the owner profile endpoints documented here. Note: this spec documents the most-used routes; the full route list lives in server/routes.ts."
+  },
+  "servers": [
+    {
+      "url": "/api",
+      "description": "Current Server"
+    }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "System Health Check",
+        "description": "Returns operational status, database connectivity, and session store availability.",
+        "responses": {
+          "200": {
+            "description": "Service healthy"
+          },
+          "503": {
+            "description": "Service degraded"
+          }
+        }
+      }
+    },
+    "/auth/login": {
+      "post": {
+        "summary": "User & Staff Login",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["username", "pin"],
+                "properties": {
+                  "username": {
+                    "type": "string"
+                  },
+                  "pin": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Authenticated session created"
+          },
+          "401": {
+            "description": "Invalid credentials"
+          }
+        }
+      }
+    },
+    "/auth/me": {
+      "get": {
+        "summary": "Current Session Context",
+        "responses": {
+          "200": {
+            "description": "Active session role and user details"
+          }
+        }
+      }
+    },
+    "/products": {
+      "get": {
+        "summary": "List store products",
+        "responses": {
+          "200": {
+            "description": "List of products"
+          }
+        }
+      },
+      "post": {
+        "summary": "Create or update product",
+        "responses": {
+          "200": {
+            "description": "Saved product"
+          }
+        }
+      }
+    },
+    "/sales": {
+      "get": {
+        "summary": "List completed sales",
+        "responses": {
+          "200": {
+            "description": "List of sales"
+          }
+        }
+      },
+      "post": {
+        "summary": "Process a sale with transactional stock deduct",
+        "responses": {
+          "201": {
+            "description": "Sale completed"
+          }
+        }
+      }
+    },
+    "/restaurant/guest-orders/{id}/settle": {
+      "post": {
+        "summary": "Settle a dining table guest order (AmarPay)",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Order settled and sale created"
+          }
+        }
+      }
+    },
+    "/shifts/current": {
+      "get": {
+        "summary": "Get current active cashier shift",
+        "responses": {
+          "200": {
+            "description": "Shift object or null"
+          }
+        }
+      }
+    },
+    "/shifts/open": {
+      "post": {
+        "summary": "Open a new cashier shift",
+        "responses": {
+          "201": {
+            "description": "Opened shift"
+          }
+        }
+      }
+    },
+    "/shifts/{id}/close": {
+      "post": {
+        "summary": "Close cashier shift with discrepancy audit",
+        "responses": {
+          "200": {
+            "description": "Closed shift summary"
+          }
+        }
+      }
+    },
+    "/payments/verify-gateway": {
+      "post": {
+        "summary": "Format-check a bKash / Nagad transaction id (NOT a verification)",
+        "description": "Phase 1 honesty fix: this endpoint never contacts any gateway and verifies nothing. It only checks the transaction-id format. Do not treat its response as proof of payment. See docs/gateway-callback-spec.md.",
+        "responses": {
+          "200": {
+            "description": "Format-check result with gatewayVerified:false"
+          }
+        }
+      }
+    },
+    "/sync/status": {
+      "get": {
+        "summary": "Sync status: database state + server outbox depth",
+        "description": "Owner/staff session required. Same live sources as /health, plus fallback mode.",
+        "responses": {
+          "200": {
+            "description": "Sync status object"
+          },
+          "401": {
+            "description": "Not authenticated"
+          }
+        }
+      }
+    },
+    "/admin/system-status": {
+      "get": {
+        "summary": "Admin system status (Phase 2)",
+        "description": "Platform-admin session required. Live database ping, fallback mode, server outbox depth, last backup-export time, and error-tracking configured/enabled booleans (the DSN itself is never exposed). Backs the Admin Panel 'System Status' tab.",
+        "responses": {
+          "200": {
+            "description": "System status object"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Not a platform admin"
+          }
+        }
+      }
+    },
+    "/admin/sync/replay": {
+      "post": {
+        "summary": "Replay the disk outbox into PostgreSQL now",
+        "description": "Platform-admin session required. No-op (with reason) when no database is configured. Live PostgreSQL replay is still UNVERIFIED in staging — see docs/staging.md.",
+        "responses": {
+          "200": {
+            "description": "Replay counts"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "403": {
+            "description": "Not a platform admin"
+          }
+        }
+      }
+    },
+    "/marketplace/orders": {
+      "post": {
+        "summary": "Place a marketplace order (server prices, transactional stock deduct)",
+        "description": "Customer session required. Prices are taken from the server's products, never the client's totals; stock is deducted transactionally and restocked on cancellation. Requires a UUID v4 idempotencyKey (the order id).",
+        "responses": {
+          "201": {
+            "description": "Created order"
+          },
+          "400": {
+            "description": "Invalid order / idempotency key"
+          }
+        }
+      }
+    },
+    "/public/guest-orders": {
+      "post": {
+        "summary": "Place a QR guest order (idempotent)",
+        "description": "No session required (QR table link). Requires an idempotencyKey; replaying the same key returns the original order instead of creating a duplicate.",
+        "responses": {
+          "201": {
+            "description": "Created guest order"
+          },
+          "400": {
+            "description": "Invalid idempotency key"
+          }
+        }
+      }
+    },
+    "/admin/backups/export": {
+      "get": {
+        "summary": "Export complete JSON backup of store records",
+        "responses": {
+          "200": {
+            "description": "Store database backup dump"
+          }
+        }
+      }
+    },
+    "/insights/forecast": {
+      "get": {
+        "summary": "Demand forecast",
+        "description": "Per-product forecast from real sales history. Response shows windowDays, leadTimeDays, the rule used, and the visible basis per product: suggested = ceil(avg daily sales over last N days x lead-time days - current stock), minimum 0.",
+        "responses": {
+          "200": {
+            "description": "Forecast list with visible basis"
+          }
+        }
+      }
+    },
+    "/insights/expiry": {
+      "get": {
+        "summary": "Medicine expiry alerts",
+        "description": "Products with expiry dates, alerted at 30, 14 and 7 days before expiry with severity by nearness (watch/warning/critical/expired).",
+        "responses": {
+          "200": {
+            "description": "Expiry alerts"
+          }
+        }
+      }
+    },
+    "/insights/dead-stock": {
+      "get": {
+        "summary": "Dead stock suggestions",
+        "description": "Products with stock but no sales in the window (default 90 days, configurable) with a discount/clearance suggested action.",
+        "responses": {
+          "200": {
+            "description": "Dead stock list"
+          }
+        }
+      }
+    },
+    "/branches": {
+      "get": {
+        "summary": "List branches",
+        "description": "Branches of the current store.",
+        "responses": {
+          "200": {
+            "description": "Branch list"
+          }
+        }
+      },
+      "post": {
+        "summary": "Create branch",
+        "description": "Create a branch. The first branch becomes the default. Requires manage_settings.",
+        "responses": {
+          "201": {
+            "description": "Branch created"
+          }
+        }
+      }
+    },
+    "/branches/{id}/products": {
+      "get": {
+        "summary": "Branch products",
+        "description": "Products scoped to one branch; another branch stock does not leak in.",
+        "responses": {
+          "200": {
+            "description": "Branch products"
+          }
+        }
+      }
+    },
+    "/branches/{id}/sales": {
+      "get": {
+        "summary": "Branch sales",
+        "description": "Sales scoped to one branch.",
+        "responses": {
+          "200": {
+            "description": "Branch sales"
+          }
+        }
+      }
+    },
+    "/counters": {
+      "post": {
+        "summary": "Create counter",
+        "description": "Create a counter inside a branch. Requires manage_settings.",
+        "responses": {
+          "201": {
+            "description": "Counter created"
+          }
+        }
+      }
+    },
+    "/shifts/z-report": {
+      "get": {
+        "summary": "Z-report per counter",
+        "description": "Closed-shift totals grouped per counter: expected cash, actual cash, discrepancy, per counter.",
+        "responses": {
+          "200": {
+            "description": "Per-counter Z-report"
+          }
+        }
+      }
+    },
+    "/suppliers": {
+      "get": {
+        "summary": "List suppliers",
+        "description": "Suppliers with totalDue (money owed).",
+        "responses": {
+          "200": {
+            "description": "Supplier list"
+          }
+        }
+      },
+      "post": {
+        "summary": "Create supplier",
+        "description": "Create a supplier. Requires manage_inventory.",
+        "responses": {
+          "201": {
+            "description": "Supplier created"
+          }
+        }
+      }
+    },
+    "/suppliers/{id}/pay": {
+      "post": {
+        "summary": "Pay supplier",
+        "description": "Reduces the supplier due and records a supplier_payment expense.",
+        "responses": {
+          "200": {
+            "description": "Updated supplier"
+          }
+        }
+      }
+    },
+    "/suppliers/dues-total": {
+      "get": {
+        "summary": "Total supplier dues",
+        "description": "Sum of money owed to all suppliers of the store; shown on the Due List.",
+        "responses": {
+          "200": {
+            "description": "Total due"
+          }
+        }
+      }
+    },
+    "/purchase-orders": {
+      "get": {
+        "summary": "List purchase orders",
+        "description": "Draft/partial/received/cancelled purchase orders.",
+        "responses": {
+          "200": {
+            "description": "Purchase order list"
+          }
+        }
+      },
+      "post": {
+        "summary": "Create draft purchase order",
+        "description": "Suggestions become draft orders the owner reviews before anything is ordered. Nothing is ordered by creating a draft.",
+        "responses": {
+          "201": {
+            "description": "Draft purchase order"
+          }
+        }
+      }
+    },
+    "/purchase-orders/{id}/receive": {
+      "post": {
+        "summary": "Goods received",
+        "description": "Receives goods: updates stock, writes inventory-log entries, and raises the supplier due by the received value.",
+        "responses": {
+          "200": {
+            "description": "Updated purchase order"
+          }
+        }
+      }
+    },
+    "/purchase-orders/{id}/cancel": {
+      "post": {
+        "summary": "Cancel draft purchase order",
+        "description": "Only a draft can be cancelled.",
+        "responses": {
+          "200": {
+            "description": "Cancelled purchase order"
+          }
+        }
+      }
+    },
+    "/coupons": {
+      "get": {
+        "summary": "List coupons",
+        "description": "Owner-created coupon codes.",
+        "responses": {
+          "200": {
+            "description": "Coupon list"
+          }
+        }
+      },
+      "post": {
+        "summary": "Create coupon",
+        "description": "Owner only. Validation happens server-side at sale time; client discounts are never trusted.",
+        "responses": {
+          "201": {
+            "description": "Coupon created"
+          }
+        }
+      }
+    },
+    "/loyalty": {
+      "get": {
+        "summary": "Loyalty accounts",
+        "description": "Points per customer phone: 1 point per full 100 taka, 1 point = 1 taka when redeemed, capped by balance and bill server-side.",
+        "responses": {
+          "200": {
+            "description": "Loyalty accounts"
+          }
+        }
+      }
+    },
+    "/reports/vat.csv": {
+      "get": {
+        "summary": "VAT report (CSV)",
+        "description": "CSV export that opens in Excel.",
+        "responses": {
+          "200": {
+            "description": "CSV file"
+          }
+        }
+      }
+    },
+    "/reports/profit-by-category.csv": {
+      "get": {
+        "summary": "Profit by category (CSV)",
+        "description": "CSV export that opens in Excel.",
+        "responses": {
+          "200": {
+            "description": "CSV file"
+          }
+        }
+      }
+    },
+    "/reports/staff-performance.csv": {
+      "get": {
+        "summary": "Staff performance (CSV)",
+        "description": "CSV export that opens in Excel.",
+        "responses": {
+          "200": {
+            "description": "CSV file"
+          }
+        }
+      }
+    },
+    "/reports/excel.csv": {
+      "get": {
+        "summary": "Accountant export (CSV)",
+        "description": "Combined VAT + profit-by-category + staff-performance CSV; opens in Excel. This is CSV, not a native .xlsx file.",
+        "responses": {
+          "200": {
+            "description": "CSV file"
+          }
+        }
+      }
+    },
+    "/reports/full-export": {
+      "get": {
+        "summary": "Full data export (JSON)",
+        "description": "Owner-scoped export. Contains no PIN verifiers.",
+        "responses": {
+          "200": {
+            "description": "Export JSON"
+          }
+        }
+      }
+    },
+    "/reports/import": {
+      "post": {
+        "summary": "Validated data import",
+        "description": "Imports reference data only (products, suppliers, coupons, branches, counters). Sales and expenses are counted as skipped and never imported, so money records are never silently overwritten. Response reports counts, imported, skips and errors.",
+        "responses": {
+          "200": {
+            "description": "Import report"
+          }
+        }
+      }
+    },
+    "/products/barcode/{code}": {
+      "get": {
+        "summary": "Look up one product by printed barcode (own store only)",
+        "description": "Phase 6. Exact match on the product's barcode field, scoped to the caller's store. 404 PRODUCT_NOT_FOUND when no product in this store carries the code.",
+        "responses": {
+          "200": {
+            "description": "The matching product"
+          },
+          "400": {
+            "description": "Invalid barcode"
+          },
+          "404": {
+            "description": "No product with that barcode in this store"
+          }
+        }
+      }
+    },
+    "/products/bulk": {
+      "post": {
+        "summary": "Bulk inventory actions: adjust stock, set price, delete",
+        "description": "Phase 6. Body: { ids (1-500), action: adjust-stock|set-price|delete, delta (adjust-stock, integer), price (set-price, >= 0), confirmed: true (delete only) }. Stock can never go negative; per-product skips are reported as { id, reason } and never hidden.",
+        "responses": {
+          "200": {
+            "description": "{ updated, deleted, skipped: [{ id, reason }] }"
+          },
+          "400": {
+            "description": "Invalid bulk request (incl. DELETE_NOT_CONFIRMED)"
+          }
+        }
+      }
+    },
+    "/inventory-logs": {
+      "get": {
+        "summary": "Stock movement history for the caller's store",
+        "description": "Phase 6 surface (route predates Phase 6): every product create/stock change and sale writes a log entry (in/out/adjustment/sale) with reason and actor; the Inventory screen's per-product History panel reads this endpoint and filters by productId.",
+        "responses": {
+          "200": {
+            "description": "Inventory log entries, newest first"
+          }
+        }
+      }
+    },
+    "/profile": {
+      "put": {
+        "summary": "Update the owner profile",
+        "description": "Owner only. Accepts storeName, storeCategory, address, phone, zila, upozila, thana, profilePicture, defaultVatRate (0-100) and a new pin (hashed server-side). Phase 6: the Profile screen now displays and edits zila/upozila/thana, which the API already carried but the UI never rendered.",
+        "responses": {
+          "200": {
+            "description": "The updated public user (pin never returned)"
+          },
+          "400": {
+            "description": "Invalid VAT rate or PIN"
+          }
+        }
+      }
+    }
+  }
+}
