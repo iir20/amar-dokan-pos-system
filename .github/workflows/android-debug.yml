@@ -1,0 +1,77 @@
+# Android debug APK — no signing secrets needed.
+#
+# Produces a debug-signed APK for on-device testing only. This is a
+# REAL native app install (same code as the release), just signed with
+# the auto-generated debug key instead of your release keystore.
+#
+# NOT for the Play Store and NOT a substitute for the signed release:
+# the release workflow (android.yml) still handles signed APK + AAB
+# builds once the four ANDROID_* secrets exist.
+#
+# Runs only when you trigger it by hand: Actions tab → "Android Debug
+# APK" → "Run workflow". The APK downloads from the run's Artifacts.
+
+name: Android Debug APK
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  android-debug:
+    name: Debug APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Warn when the native backend URL variable is unset
+        run: |
+          if [ -z "$VITE_API_BASE_URL" ]; then
+            echo "::warning::VITE_API_BASE_URL repository variable is not set. The APK will build, but the installed app will report 'server address not configured' at login until the variable is set or a server address is entered in Settings."
+          else
+            echo "Native backend URL variable is set (value not printed)."
+          fi
+        env:
+          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
+
+      - name: Build Capacitor web assets (no PWA service worker)
+        run: CAPACITOR_BUILD=true npm run build
+        env:
+          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
+
+      - name: Sync Capacitor Android project
+        run: npx cap sync android
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Build debug APK
+        run: |
+          # gradlew can lose its executable bit when the repo is
+          # assembled from a phone download (FAT/FUSE storage has no
+          # Unix permissions), so restore it here unconditionally.
+          chmod +x android/gradlew
+          cd android
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-debug-apk
+          path: android/app/build/outputs/apk/debug/*.apk
+          retention-days: 90
+          
