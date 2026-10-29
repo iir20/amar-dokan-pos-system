@@ -129,9 +129,6 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
       - name: Write keystore + keystore.properties (runner temp only)
         run: |
           echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > /tmp/amar-dokan-release.keystore
@@ -190,4 +187,3 @@ jobs:
           files: |
             android/app/build/outputs/apk/release/*.apk
             android/app/build/outputs/bundle/release/*.aab
-            
