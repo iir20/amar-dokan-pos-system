@@ -1,9 +1,26 @@
-# Phase 2 — Android release build (signed APK + AAB) on main-branch tags.
+# Android release build (signed APK + AAB) — push-only + versioned tags.
 #
-# Trigger: pushing a tag like v1.2.0 (tags are the release gate; every push
-# to main still runs CI in ci.yml first). The workflow FAILS CLOSED when
-# signing secrets are missing — it never signs with a debug key and never
-# uploads an unsigned "release" artifact as if it were signed.
+# TRIGGERS:
+#   - Push to `main`: builds the signed APK + AAB and publishes them
+#     to a ROLLING release tagged `latest` (see "Rolling release"
+#     below). No version tag is needed — every main push ships.
+#   - Push of a `v*` tag (e.g. v1.2.0): the same signed build is
+#     attached to that version's release instead. Tag releases keep
+#     working alongside the rolling release; neither replaces the other.
+#   - workflow_dispatch: manual run (build + artifacts only; no
+#     release is created unless the run is on main or a v* tag).
+#
+# ROLLING RELEASE (`latest`):
+#   The workflow force-moves the `latest` tag to the pushed commit and
+#   then creates-or-updates the GitHub Release for that tag with the
+#   fresh APK + AAB. The rolling release is marked make_latest: false
+#   so a versioned (v*) release stays GitHub's "latest" release in the
+#   UI; `latest` is the always-fresh main-branch build, not a version.
+#   Download it from: Releases → "Latest (main)" (tag `latest`).
+#
+# FAIL CLOSED: the workflow FAILS when signing secrets are missing —
+# it never signs with a debug key and never uploads an unsigned
+# "release" artifact as if it were signed.
 #
 # Required GitHub Secrets (repo Settings > Secrets and variables > Actions):
 #   ANDROID_KEYSTORE_BASE64  — base64 of the upload keystore (.jks), created
@@ -14,11 +31,25 @@
 # No secret value is ever echoed, committed, or baked into the app.
 # The keystore file is written to a temp path inside the runner only and
 # is gone when the job ends.
+#
+# NATIVE BACKEND URL (repository VARIABLE, not a secret — it is a public URL):
+#   VITE_API_BASE_URL — the backend origin the Android app must talk
+#   to (e.g. the Render service URL). Set it in repo Settings >
+#   Secrets and variables > Actions > Variables BEFORE the first
+#   push-only release. If it is unset, the build still succeeds but
+#   the installed app shows an explicit "server address not
+#   configured" error at login instead of silently failing (see
+#   services/api.ts) — so an unset variable is a warning here, and a
+#   visible error in the app, never a silent misconfiguration.
+#   The workflow deliberately does NOT hardcode any backend URL: the
+#   repo contains no verified production URL to bake in, and guessing
+#   one would ship a broken release.
 
 name: Android Release
 
 on:
   push:
+    branches: ['main']
     tags: ['v*']
   workflow_dispatch: {}
 
@@ -29,7 +60,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Checkout repository (tag)
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Setup Node.js
@@ -51,10 +82,29 @@ jobs:
       - name: Run unit tests
         run: npm test
 
+      - name: Warn when the native backend URL variable is unset
+        # Non-failing on purpose: web builds do not need it, and a
+        # native build without it fails VISIBLY in the app (missing
+        # server-address error at login) rather than silently. The
+        # warning exists so the gap is noticed in the run log.
+        run: |
+          if [ -z "$VITE_API_BASE_URL" ]; then
+            echo "::warning::VITE_API_BASE_URL repository variable is not set. The APK will build, but the installed app will report 'server address not configured' at login until the variable is set or a server address is entered in Settings. See docs/android.md 'Backend connection'."
+          else
+            echo "Native backend URL variable is set (value not printed)."
+          fi
+        env:
+          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
+
       - name: Build Capacitor web assets (no PWA service worker)
         # CAPACITOR_BUILD=true omits the Workbox SW from dist so the native
         # shell's offline story is AmarSync alone (see capacitor.config.ts).
+        # VITE_API_BASE_URL is baked in at build time as the native
+        # default backend origin (services/api.ts); it is empty for web
+        # builds, which keep using the relative '/api'.
         run: CAPACITOR_BUILD=true npm run build
+        env:
+          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
 
       - name: Sync Capacitor Android project
         run: npx cap sync android
@@ -114,7 +164,27 @@ jobs:
             android/app/build/outputs/bundle/release/*.aab
           retention-days: 90
 
-      - name: Attach APK + AAB to the tag release
+      - name: Move rolling 'latest' tag to this commit (main pushes only)
+        if: github.ref == 'refs/heads/main'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -f latest HEAD
+          git push -f origin latest
+
+      - name: Attach APK + AAB to the rolling 'latest' release (main pushes only)
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest (main)
+          make_latest: false
+          files: |
+            android/app/build/outputs/apk/release/*.apk
+            android/app/build/outputs/bundle/release/*.aab
+
+      - name: Attach APK + AAB to the tag release (v* tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: |

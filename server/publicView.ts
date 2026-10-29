@@ -29,3 +29,25 @@ export function publicGuestOrderView(order: any): any {
   const items = Array.isArray(order.items) ? order.items.map(publicProductView) : order.items;
   return { ...order, items };
 }
+
+// Per-store Smart QR storefront view. ONLY these fields may leave the
+// server for an unauthenticated storefront visitor: the store's public
+// name, category, contact/location display fields and photo. NEVER
+// included: the internal owner id, username, PIN, plan/subscription,
+// security fields (failed logins, locks), staff, dues, costs, sales
+// totals, or any other store's data. The storeCode itself is included
+// because it IS the public handle printed on the QR.
+export function publicStoreView(user: any): any {
+  if (!user || typeof user !== 'object') return null;
+  return {
+    storeCode: user.storeCode ?? null,
+    storeName: user.storeName ?? null,
+    storeCategory: user.storeCategory ?? null,
+    address: user.address ?? null,
+    phone: user.phone ?? null,
+    zila: user.zila ?? null,
+    upozila: user.upozila ?? null,
+    thana: user.thana ?? null,
+    profilePicture: user.profilePicture ?? null,
+  };
+}

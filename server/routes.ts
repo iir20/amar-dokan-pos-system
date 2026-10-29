@@ -574,6 +574,28 @@ export function registerRoutes(app: Express) {
     res.json(await Storage.getSalesByStore(storeId!));
   });
 
+  // Dashboard headline totals (ITEM 1 fix): server-side aggregation of
+  // POS sales + delivered marketplace orders. Previously the dashboard
+  // summed only GET /api/sales client-side, so completed online orders
+  // never reached the overall sell total. Same permission as /api/sales.
+  app.get(api('/dashboard/totals'), ownerOrStaff, requirePermission('view_reports'), async (req, res) => {
+    const storeId = await currentStoreId(req);
+    res.json(await Storage.getDashboardTotals(storeId!));
+  });
+
+  // Wave 2 (second addition) — daily hisab closing summary. Same
+  // permission as /sales and /dashboard/totals (owner, or staff with
+  // view_reports); the store is always the caller's own store, never a
+  // ?storeId parameter. Invalid dates are 400, never silently today.
+  app.get(api('/hisab'), ownerOrStaff, requirePermission('view_reports'), async (req, res) => {
+    const date = req.query.date;
+    if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(new Date(date).getTime())) {
+      return res.status(400).json({ error: 'INVALID_DATE', message: 'Query ?date=YYYY-MM-DD is required.' });
+    }
+    const storeId = await currentStoreId(req);
+    res.json(await Storage.getHisab(storeId!, date));
+  });
+
   app.post(api('/sales'), ownerOrStaff, requirePermission('process_sale'), async (req, res) => {
     try {
       const storeId = await currentStoreId(req);
@@ -927,6 +949,41 @@ export function registerRoutes(app: Express) {
     res.json(publicProductList(products.filter((product: any) => product.isOnlineVisible !== false)));
   });
 
+  // Per-store Smart QR storefront (public, no login). The code in the
+  // URL path (/s/<code>) resolves to EXACTLY one store: the lookup is
+  // an exact match on users.store_code, and an unknown code answers
+  // STORE_NOT_FOUND — never another store, never a store list. The
+  // store view strips every internal field (see server/publicView.ts)
+  // and the menu strips cost and hides non-online items. The legacy
+  // /public/store/:storeId/menu route above is unchanged.
+  app.get(api('/public/store/code/:code'), async (req, res) => {
+    const storefront = await Storage.getPublicStorefront(req.params.code as string);
+    if (!storefront) return res.status(404).json({ error: 'STORE_NOT_FOUND' });
+    res.json(storefront.store);
+  });
+
+  app.get(api('/public/store/code/:code/menu'), async (req, res) => {
+    const storefront = await Storage.getPublicStorefront(req.params.code as string);
+    if (!storefront) return res.status(404).json({ error: 'STORE_NOT_FOUND' });
+    res.json(storefront.products);
+  });
+
+  // Owner-only: ensure this store has a Smart QR code (backfills
+  // legacy stores) and return it. The code is a public handle printed
+  // on the QR — it is not a secret — but only the owning store may
+  // mint or read its own code through this endpoint.
+  app.post(api('/store-qr'), async (req, res) => {
+    if (req.session.role !== 'owner' || !req.session.userId) {
+      return res.status(401).json({ error: 'UNAUTHORIZED' });
+    }
+    try {
+      const user = await Storage.ensureStoreCode(req.session.userId);
+      res.json({ storeCode: (user as any).storeCode });
+    } catch (e: any) {
+      res.status(500).json({ error: 'INTERNAL_ERROR' });
+    }
+  });
+
   app.get(api('/public/table/:tableId'), async (req, res) => {
     const table = await Storage.getTableById(req.params.tableId as string);
     if (!table || !table.isActive) return res.status(404).json({ error: 'NOT_FOUND' });
@@ -938,7 +995,45 @@ export function registerRoutes(app: Express) {
       if (typeof req.body.idempotencyKey !== 'string') {
         return res.status(400).json({ error: 'INVALID_IDEMPOTENCY_KEY', message: 'A request id is required.' });
       }
-      if (typeof req.body.tableId !== 'string' || !req.body.tableId.trim()) {
+      // Store-QR pickup branch: a storeCode (no tableId) orders from
+      // the resolved store's storefront through the SAME guest-order
+      // pipeline (Storage.createPickupGuestOrder re-validates items
+      // against that store and recomputes totals server-side). A
+      // request naming both a table and a store code is ambiguous
+      // and is rejected rather than guessed.
+      const hasStoreCode = typeof req.body.storeCode === 'string' && req.body.storeCode.trim() !== '';
+      const hasTableId = typeof req.body.tableId === 'string' && req.body.tableId.trim() !== '';
+      if (hasStoreCode && hasTableId) {
+        return res
+          .status(400)
+          .json({ error: 'INVALID_ORDER', message: 'Provide either a table or a store code, not both.' });
+      }
+      if (hasStoreCode) {
+        if (!Array.isArray(req.body.items) || req.body.items.length === 0 || req.body.items.length > 100) {
+          return res.status(400).json({ error: 'INVALID_ORDER', message: 'Between 1 and 100 items are required.' });
+        }
+        if (req.body.note !== undefined && (typeof req.body.note !== 'string' || req.body.note.length > 500)) {
+          return res.status(400).json({ error: 'INVALID_ORDER_NOTE', message: 'Note must be at most 500 characters.' });
+        }
+        const store = await Storage.getUserByStoreCode(req.body.storeCode.trim());
+        if (!store) return res.status(404).json({ error: 'STORE_NOT_FOUND' });
+        const order = await Storage.createPickupGuestOrder({
+          idempotencyKey: req.body.idempotencyKey,
+          storeId: store.id,
+          items: req.body.items.map((item: any) => ({
+            id: item?.id,
+            quantity: item?.quantity,
+            note: item?.note,
+          })),
+          note: req.body.note,
+        });
+        broadcastToStore(order.storeId!, {
+          type: 'NEW_ORDER',
+          payload: order,
+        });
+        return res.status(201).json(publicGuestOrderView(order));
+      }
+      if (!hasTableId) {
         return res.status(400).json({ error: 'INVALID_TABLE', message: 'A table is required.' });
       }
       if (!Array.isArray(req.body.items) || req.body.items.length === 0 || req.body.items.length > 100) {
@@ -1298,6 +1393,19 @@ export function registerRoutes(app: Express) {
       res.status(201).json(await Storage.createBranch({ storeId: storeId!, ...body }));
     } catch (e: any) {
       phase3Error(e, res, 'BRANCH_CREATE_FAILED');
+    }
+  });
+  // Wave 2 (Item 2) — guarded delete. Storage.deleteBranch refuses (409
+  // BRANCH_NOT_EMPTY, message naming every blocker) when the branch
+  // still holds stock, sales, dues, counters, purchase orders or
+  // shifts, so no money record is ever orphaned. No transfer flow
+  // exists yet: the owner must clear or move those records first.
+  app.delete(api('/branches/:id'), ownerOrStaff, requirePermission('manage_settings'), async (req, res) => {
+    try {
+      const storeId = await currentStoreId(req);
+      res.json(await Storage.deleteBranch(storeId!, req.params.id as string));
+    } catch (e: any) {
+      phase3Error(e, res, 'BRANCH_DELETE_FAILED');
     }
   });
   app.get(

@@ -4,7 +4,33 @@ import { TRANSLATIONS } from '../constants';
 import { Eye, Phone, Lock, Crown, ChevronDown, ChevronUp, Users, FileText } from 'lucide-react';
 import { useApiData } from '../hooks/useApiData';
 import { StorageService } from '../services/storage';
+import { getOutbox } from '../services/amarSync';
+import { formatTakaBn } from '../utils/currency';
+import { computeCreditScore } from '../shared/distinctive';
 import SubscriptionModal from './SubscriptionModal';
+
+// Wave 2 (second addition) — due follow-up surfacing. New strings in
+// this local dict (EN + BN); types.ts / constants.ts are owned by the
+// merge coordinator. NOTE: one-tap collection RECORDING is deliberately
+// NOT in this file: no server endpoint can settle a due (no PUT /sales,
+// no /dues/collect), and routes.ts ownership here is hisab-only — so a
+// Collect button would either lie or corrupt sales totals. Follow-up
+// (who owes, since when, call link, receipt per invoice) ships fully;
+// recording is listed as not-built in the worker report with the exact
+// endpoint spec the merge needs.
+const DUE2: Record<string, { en: string; bn: string }> = {
+  oldestDue: { en: 'Oldest due', bn: 'সবচেয়ে পুরনো বাকি' },
+  daysAgo: { en: 'days outstanding', bn: 'দিন ধরে বাকি' },
+  call: { en: 'Call', bn: 'কল করুন' },
+  pendingSyncNote: {
+    en: 'sales still waiting to sync — dues from them will appear here once synced.',
+    bn: 'টি বিক্রি এখনো সিঙ্ক হয়নি — সিঙ্ক হলে সেগুলোর বাকি এখানে দেখা যাবে।',
+  },
+  followUpHint: {
+    en: 'Oldest first: collect the longest-outstanding baki first.',
+    bn: 'সবচেয়ে পুরনো বাকি আগে আদায় করুন।',
+  },
+};
 
 interface DueListProps {
   sales: Sale[];
@@ -17,6 +43,7 @@ interface GroupedDue {
   customerPhone: string;
   totalDue: number;
   invoices: Sale[];
+  oldestDate: string;
 }
 
 const DueList: React.FC<DueListProps> = ({ lang, onViewInvoice }) => {
@@ -54,11 +81,15 @@ const DueList: React.FC<DueListProps> = ({ lang, onViewInvoice }) => {
             customerPhone: sale.customerPhone || '',
             totalDue: 0,
             invoices: [],
+            oldestDate: sale.date,
           };
         }
 
         groups[nameKey].invoices.push(sale);
         groups[nameKey].totalDue += sale.dueAmount;
+        if (sale.date && sale.date < groups[nameKey].oldestDate) {
+          groups[nameKey].oldestDate = sale.date;
+        }
 
         // If the group doesn't have a phone but this invoice does, update it
         if (!groups[nameKey].customerPhone && sale.customerPhone) {
@@ -71,6 +102,15 @@ const DueList: React.FC<DueListProps> = ({ lang, onViewInvoice }) => {
   }, [allSales]);
 
   const totalDueAmount = groupedDues.reduce((acc, g) => acc + g.totalDue, 0);
+  // Bangla digits for Bangla UI; English display kept byte-identical
+  // to before (৳ + toLocaleString) so existing screens/tests don't move.
+  const m = (n: number) => (lang === 'bn' ? formatTakaBn(n) : `৳${n.toLocaleString()}`);
+  const d2 = (key: keyof typeof DUE2) => DUE2[key][lang];
+  const pendingOutboxCount = getOutbox().filter((i) => i.status !== 'synced').length;
+  const daysOutstanding = (iso: string) => {
+    const ms = Date.now() - new Date(iso).getTime();
+    return Number.isFinite(ms) && ms > 0 ? Math.floor(ms / 86400000) : 0;
+  };
 
   const toggleGroup = (customerName: string) => {
     const newSet = new Set(expandedGroups);
@@ -125,14 +165,20 @@ const DueList: React.FC<DueListProps> = ({ lang, onViewInvoice }) => {
             {t.dueList}
           </h2>
           <p className="text-sm text-gray-500 mt-1">{groupedDues.length} customers with outstanding payments</p>
+          <p className="text-xs text-gray-400 mt-1">{d2('followUpHint')}</p>
+          {pendingOutboxCount > 0 && (
+            <p data-testid="due-pending-sync-note" className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-lg px-2 py-1 mt-2 w-fit">
+              {pendingOutboxCount} {d2('pendingSyncNote')}
+            </p>
+          )}
         </div>
         <div className="bg-red-50 text-red-700 px-4 py-2 rounded-xl font-bold border border-red-100 shadow-sm flex flex-col items-end">
           <span className="text-xs text-red-400 uppercase tracking-wider">{t.totalDue}</span>
-          <span className="text-xl">৳{totalDueAmount.toLocaleString()}</span>
+          <span className="text-xl">{m(totalDueAmount)}</span>
         </div>
         <div className="bg-amber-50 text-amber-800 px-4 py-2 rounded-xl font-bold border border-amber-100 shadow-sm flex flex-col items-end">
           <span className="text-xs text-amber-500 uppercase tracking-wider">{t.supplierDues}</span>
-          <span className="text-xl">৳{supplierDuesTotal.toLocaleString()}</span>
+          <span className="text-xl">{m(supplierDuesTotal)}</span>
         </div>
       </div>
 
@@ -170,13 +216,65 @@ const DueList: React.FC<DueListProps> = ({ lang, onViewInvoice }) => {
                       <td className="p-4 text-gray-400">
                         {isExpanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
                       </td>
-                      <td className="p-4 font-bold text-gray-800">{group.customerName}</td>
+                      <td className="p-4 font-bold text-gray-800">
+                        {group.customerName}
+                        <div className="text-[11px] font-medium text-amber-700 mt-0.5">
+                          {d2('oldestDue')}: {new Date(group.oldestDate).toLocaleDateString(lang === 'bn' ? 'bn-BD' : 'en-GB')}
+                          {' · '}
+                          {daysOutstanding(group.oldestDate)} {d2('daysAgo')}
+                        </div>
+                        {/* DISTINCTIVE FEATURES (2026-10-29) — credit-score
+                            display only. Scored over ALL of this customer's
+                            sales (not just the due bills in this group),
+                            with its full basis shown — never a black box.
+                            Limitation: records carry no due date, so
+                            ageing stands in for lateness (see the note). */}
+                        {(() => {
+                          const score = computeCreditScore(
+                            allSales.filter(
+                              (s) => (s.customerName?.trim() || 'Unknown Customer') === group.customerName,
+                            ),
+                          );
+                          if (!score) {
+                            return (
+                              <div data-testid="credit-score" className="text-[11px] font-medium text-gray-400 mt-0.5">
+                                {t.creditScoreLabel}: {t.creditScoreNoHistory}
+                              </div>
+                            );
+                          }
+                          const bandLabel =
+                            score.band === 'good'
+                              ? t.creditScoreGood
+                              : score.band === 'fair'
+                                ? t.creditScoreFair
+                                : t.creditScoreCaution;
+                          const bandColor =
+                            score.band === 'good'
+                              ? 'text-emerald-700'
+                              : score.band === 'fair'
+                                ? 'text-amber-700'
+                                : 'text-red-700';
+                          return (
+                            <div data-testid="credit-score" className="text-[11px] font-medium text-gray-600 mt-0.5">
+                              <span className={bandColor}>
+                                {t.creditScoreLabel}: {score.score} ({bandLabel})
+                              </span>
+                              {' — '}
+                              {lang === 'bn'
+                                ? `${score.basis.totalBills}টি বিল · পরিশোধ ${Math.round(score.basis.paidRatio * 100)}% · বাকি ৳${score.basis.totalDue.toLocaleString()} · সবচেয়ে পুরনো বাকি ${score.basis.oldestDueDays} দিন`
+                                : `${score.basis.totalBills} bills · paid ${Math.round(score.basis.paidRatio * 100)}% · due ৳${score.basis.totalDue.toLocaleString()} · oldest due ${score.basis.oldestDueDays}d`}
+                              <span className="block text-gray-400">{t.creditScoreAgeingNote}</span>
+                            </div>
+                          );
+                        })()}
+                      </td>
                       <td className="p-4 text-gray-600">
                         {group.customerPhone ? (
-                          <div className="flex items-center gap-2">
+                          <a href={`tel:${group.customerPhone}`} onClick={(e) => e.stopPropagation()} className="flex items-center gap-2 hover:text-emerald-600">
                             <Phone size={14} className="text-gray-400" />
                             {group.customerPhone}
-                          </div>
+                            <span className="text-xs font-bold text-emerald-600 underline">{d2('call')}</span>
+                          </a>
                         ) : (
                           '-'
                         )}
@@ -187,7 +285,7 @@ const DueList: React.FC<DueListProps> = ({ lang, onViewInvoice }) => {
                         </span>
                       </td>
                       <td className="p-4 text-right font-bold text-red-600 text-lg">
-                        ৳{group.totalDue.toLocaleString()}
+                        {m(group.totalDue)}
                       </td>
                     </tr>
 
@@ -214,15 +312,15 @@ const DueList: React.FC<DueListProps> = ({ lang, onViewInvoice }) => {
                               <div className="flex items-center gap-6">
                                 <div className="text-right">
                                   <div className="text-xs text-gray-400 uppercase">Total</div>
-                                  <div className="text-sm font-medium">৳{sale.totalAmount}</div>
+                                  <div className="text-sm font-medium">{m(sale.totalAmount)}</div>
                                 </div>
                                 <div className="text-right">
                                   <div className="text-xs text-gray-400 uppercase">Paid</div>
-                                  <div className="text-sm font-medium text-emerald-600">৳{sale.paidAmount}</div>
+                                  <div className="text-sm font-medium text-emerald-600">{m(sale.paidAmount)}</div>
                                 </div>
                                 <div className="text-right w-20">
                                   <div className="text-xs text-red-300 uppercase font-bold">Due</div>
-                                  <div className="text-sm font-bold text-red-600">৳{sale.dueAmount}</div>
+                                  <div className="text-sm font-bold text-red-600">{m(sale.dueAmount)}</div>
                                 </div>
                                 <button
                                   onClick={(e) => {

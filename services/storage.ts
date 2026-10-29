@@ -21,6 +21,20 @@ import {
 } from '../types';
 import { api } from './api';
 
+export interface DashboardTotals {
+  totalSales: number;
+  posTotalSales: number;
+  onlineCompletedTotalSales: number;
+  onlinePendingTotalSales: number;
+  posCount: number;
+  onlineCompletedCount: number;
+  onlinePendingCount: number;
+  onlineCancelledCount: number;
+  totalCount: number;
+  totalDue: number;
+  duplicateOnlineIdsSkipped: number;
+}
+
 let cachedRole: 'owner' | 'staff' | 'customer' | null = null;
 let cachedUser: User | null = null;
 let cachedStaff: Staff | null = null;
@@ -205,6 +219,20 @@ export const StorageService = {
   createGuestOrder: async (order: Omit<GuestOrder, 'id'> & { idempotencyKey: string }) =>
     api.post('/public/guest-orders', order),
 
+  // Per-store Smart QR storefront (public, no login). The code resolves
+  // server-side to exactly one store; an unknown code is a 404, never
+  // another store's data.
+  getPublicStoreByCode: async (code: string) => api.get(`/public/store/code/${code}`),
+
+  getPublicStoreMenuByCode: async (code: string): Promise<Product[]> =>
+    api.get(`/public/store/code/${code}/menu`),
+
+  createPickupGuestOrder: async (order: { idempotencyKey: string; storeCode: string; items: any[]; note?: string }) =>
+    api.post('/public/guest-orders', order),
+
+  // Owner-only: ensure this store has a Smart QR code and return it.
+  ensureStoreQr: async (): Promise<{ storeCode: string }> => api.post('/store-qr', {}),
+
   getGuestOrder: async (id: string): Promise<GuestOrder> => api.get(`/public/guest-orders/${id}`),
 
   // --- Marketplace: Customer Auth ---
@@ -332,6 +360,15 @@ export const StorageService = {
   getDeadStock: async (windowDays = 90): Promise<any> => api.get(`/insights/dead-stock?windowDays=${windowDays}`),
   getBranches: async (): Promise<import('../types').Branch[]> => api.get('/branches'),
   createBranch: async (data: { name: string; address?: string; isDefault?: boolean }) => api.post('/branches', data),
+  // Wave 2 (Item 2) — guarded delete: the server refuses with 409
+  // BRANCH_NOT_EMPTY (message names the blockers) when the branch still
+  // holds stock, sales, dues, counters, purchase orders or shifts.
+  deleteBranch: async (id: string): Promise<{ deleted: boolean }> => api.del(`/branches/${id}`),
+  // Wave 2 (Item 1, UI wiring) — server-side dashboard headline totals:
+  // POS sales + delivered online orders, with pending/cancelled kept
+  // separate so the headline never double-counts. Same shape as
+  // server/storage.ts DashboardTotals.
+  getDashboardTotals: async (): Promise<DashboardTotals> => api.get('/dashboard/totals'),
   getBranchProducts: async (branchId: string) => api.get(`/branches/${branchId}/products`),
   getBranchSales: async (branchId: string) => api.get(`/branches/${branchId}/sales`),
   getCounters: async (branchId: string) => api.get(`/branches/${branchId}/counters`),

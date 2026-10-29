@@ -1,4 +1,15 @@
-import { pgTable, text, integer, real, boolean, timestamp, jsonb, serial, index, primaryKey } from 'drizzle-orm/pg-core';
+import {
+  pgTable,
+  text,
+  integer,
+  real,
+  boolean,
+  timestamp,
+  jsonb,
+  serial,
+  index,
+  primaryKey,
+} from 'drizzle-orm/pg-core';
 import { createInsertSchema } from 'drizzle-zod';
 import { z } from 'zod';
 
@@ -7,6 +18,11 @@ import { z } from 'zod';
 // ------------------------------------------------------------------
 export const users = pgTable('users', {
   id: text('id').primaryKey(),
+  // Per-store Smart QR handle (migration 0004). A short random code,
+  // NOT the sequential-looking internal id: the public storefront URL
+  // is /s/<storeCode>, and one store's code must never resolve to
+  // another store. Null only for legacy rows until backfilled.
+  storeCode: text('store_code'),
   storeName: text('store_name').notNull(),
   storeCategory: text('store_category').notNull(),
   username: text('username').notNull().unique(),
@@ -199,7 +215,11 @@ export const guestOrders = pgTable(
   {
     id: text('id').primaryKey(),
     storeId: text('store_id').notNull(),
-    tableId: text('table_id').notNull(),
+    // Null = a store-QR pickup order (migration 0005): the guest
+    // ordered from the store's public storefront, not from a table.
+    // Same guest_orders pipeline, lifecycle, KDS queue and settlement
+    // as a table order — only the fulfilment mode differs.
+    tableId: text('table_id'),
     items: jsonb('items').notNull(),
     note: text('note'),
     status: text('status').notNull().default('pending'),
@@ -358,10 +378,7 @@ export const loyaltyAccounts = pgTable(
     points: integer('points').notNull().default(0),
     updatedAt: timestamp('updated_at').defaultNow(),
   },
-  (table) => [
-    index('loyalty_store_idx').on(table.storeId),
-    primaryKey({ columns: [table.storeId, table.phone] }),
-  ],
+  (table) => [index('loyalty_store_idx').on(table.storeId), primaryKey({ columns: [table.storeId, table.phone] })],
 );
 
 // ------------------------------------------------------------------

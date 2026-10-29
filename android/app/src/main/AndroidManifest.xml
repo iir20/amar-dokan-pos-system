@@ -38,4 +38,49 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Phase 7 (Item 3) native camera + voice. These are declared here
+         explicitly (not left to plugin-manifest merging alone) so the
+         requirement is visible in the app's own manifest. Both are
+         runtime permissions: the app requests each on first use only
+         (services/native.ts ensureCameraPermission /
+         ensureSpeechPermission) and a denial shows the Settings path
+         instead of re-prompting. The speech plugin also declares
+         RECORD_AUDIO in its own manifest; the declaration here is the
+         same permission, not a second one. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- required=false: the app must still install and work (manual
+         barcode entry + typed commands) on devices with no camera/mic. -->
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
+    <!-- Native permission system (services/permissions.ts, docs/
+         android-permissions.md) — Bluetooth thermal printing via
+         @capacitor-community/bluetooth-le (services/nativePrint.ts).
+         Version split, Android 12 = API 31 (minSdk 24, targetSdk 36):
+         - Android 12+: BLUETOOTH_SCAN (find the printer) +
+           BLUETOOTH_CONNECT (connect + write ESC/POS bytes). Both are
+           runtime permissions, requested at the point of use only
+           (user taps Bluetooth Print), never at app start.
+         - Android 11 and below: the legacy BLUETOOTH + BLUETOOTH_ADMIN
+           pair, capped with maxSdkVersion="30" so they are never
+           requested on 12+ devices (where they are install-time
+           normal permissions and the SCAN/CONNECT pair applies).
+         - BLUETOOTH_ADVERTISE is deliberately NOT declared: the app
+           is a BLE central (scans/connects to a printer), never a
+           peripheral, so it never advertises.
+         - bluetooth_le feature is required=false: the app must still
+           install and sell (ESC/POS .txt download fallback) on
+           devices without Bluetooth LE.
+         Deliberately NOT declared here (see docs/android-permissions.md
+         for the evidence): location (app code never uses it; the BLE
+         plugin's own manifest still merges it — see that doc),
+         READ_MEDIA_IMAGES / storage (photo/logo picks use the system
+         picker, which needs no media permission), POST_NOTIFICATIONS
+         (the app posts no system notifications; order alerts and sync
+         status are in-app UI), contacts, SMS. -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
 </manifest>

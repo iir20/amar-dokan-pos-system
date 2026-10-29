@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useDeferredValue } from 'react';
 import { Product, Language, User, StoreCategory } from '../types';
 import { TRANSLATIONS, LIMITS, STORE_THEMES } from '../constants';
 import { StorageService } from '../services/storage';
@@ -25,8 +25,332 @@ import SubscriptionModal from './SubscriptionModal';
 // inventory voice, and camera/manual barcode entry.
 import { AdCard, AdButton, AdInput } from './ui';
 import VoiceInventory from './VoiceInventory';
+import VoiceAddProduct from './VoiceAddProduct';
 import BarcodeScanner from './BarcodeScanner';
 import { InventoryLog } from '../types';
+
+// ------------------------------------------------------------------
+// Item 5 — inventory efficiency (Phase 6 follow-up). Pure helpers are
+// exported so unit tests can cover them without rendering; the
+// component below only wires them to the UI. No behaviour below
+// removes an existing path: search, barcode lookup, manual entry,
+// voice fallback, bulk adjust/price/delete and movement history all
+// keep their existing entry points and testids.
+//
+// NOTE ON TRANSLATIONS: the Item 5 strings were promoted (Wave 2) into
+// the shared TRANSLATIONS in constants.ts (`inv*` keys) + the Translation
+// type in types.ts; the component reads t.inv* directly.
+// ------------------------------------------------------------------
+
+/** Stock below this is "low" — the threshold the Phase 6 UI already used. */
+export const LOW_STOCK_THRESHOLD = 10;
+
+const BANGLA_DIGITS = '০১২৩৪৫৬৭৮৯';
+
+/** Lowercase, trim, collapse whitespace, Bangla digits -> Latin digits,
+ *  so "চাল", "CHAL" and a Bangla-digit barcode all match stored data. */
+export function normalizeInventoryQuery(value: string | null | undefined): string {
+  return (value || '')
+    .split('')
+    .map((ch) => {
+      const idx = BANGLA_DIGITS.indexOf(ch);
+      return idx >= 0 ? String(idx) : ch;
+    })
+    .join('')
+    .toLocaleLowerCase()
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+/** One precomputed haystack per product: the list is indexed once per
+ *  products change (useMemo in the component) instead of lowercasing
+ *  four fields per product on every keystroke. */
+export function inventorySearchHaystack(product: Product): string {
+  return normalizeInventoryQuery(
+    [product.name, product.nameBn, product.category, product.barcode].filter(Boolean).join(' '),
+  );
+}
+
+/**
+ * Instant search over name, Bengali name, category and barcode in one
+ * box. Token-AND: every whitespace-separated token must appear
+ * somewhere in the haystack, so "rice grocery" and "grocery rice" both
+ * match (the old whole-string includes() failed on reversed order).
+ * A query that exactly equals a barcode ranks that product first, so a
+ * full scanned/typed code surfaces its product even when the code is a
+ * prefix of another product's code. Single-token behaviour is
+ * unchanged (one token + includes == the old any-field includes).
+ */
+export function searchInventory(products: Product[], query: string): Product[] {
+  const q = normalizeInventoryQuery(query);
+  if (!q) return [...products];
+  const tokens = q.split(' ');
+  const matches = products.filter((p) => {
+    const haystack = inventorySearchHaystack(p);
+    return tokens.every((token) => haystack.includes(token));
+  });
+  const exact = matches.filter((p) => normalizeInventoryQuery(p.barcode) === q);
+  if (exact.length === 0) return matches;
+  const exactIds = new Set(exact.map((p) => p.id));
+  return [...exact, ...matches.filter((p) => !exactIds.has(p.id))];
+}
+
+export function lowStockProducts(products: Product[], threshold: number = LOW_STOCK_THRESHOLD): Product[] {
+  return products.filter((p) => p.stock < threshold);
+}
+
+/** "Select all shown" must UNION with the existing selection, never
+ *  replace it — the old replace silently dropped products selected
+ *  before a search/filter change. */
+export function unionSelection(existing: ReadonlySet<string>, visibleIds: string[]): Set<string> {
+  const next = new Set(existing);
+  visibleIds.forEach((id) => next.add(id));
+  return next;
+}
+
+/** Deselect only the shown rows; hidden selections survive. */
+export function deselectVisibleSelection(existing: ReadonlySet<string>, visibleIds: string[]): Set<string> {
+  const next = new Set(existing);
+  visibleIds.forEach((id) => next.delete(id));
+  return next;
+}
+
+/** How many selected products are hidden by the current search/filter,
+ *  so the bulk panel can say so instead of silently acting on them. */
+export function hiddenSelectedCount(selected: ReadonlySet<string>, visibleIds: string[]): number {
+  const visible = new Set(visibleIds);
+  let count = 0;
+  selected.forEach((id) => {
+    if (!visible.has(id)) count++;
+  });
+  return count;
+}
+
+export interface BulkActionResult {
+  updated: number;
+  deleted: number;
+  skipped: Array<{ id: string; reason: string }>;
+}
+
+const BULK_SKIP_REASONS: Record<string, { en: string; bn: string }> = {
+  PRODUCT_NOT_FOUND: { en: 'not found', bn: 'পাওয়া যায়নি' },
+  INSUFFICIENT_STOCK: { en: 'would go below zero', bn: 'স্টক শূন্যের নিচে যেত' },
+  DELETE_FAILED: { en: 'delete failed', bn: 'মোছা যায়নি' },
+};
+
+/**
+ * Bulk result message with PER-ITEM skip reporting (name + reason),
+ * not just a count of reasons. The English prefix keeps the exact
+ * "N updated, N deleted" wording the Phase 6 E2E asserts on.
+ */
+export function formatBulkMessage(result: BulkActionResult, products: Product[], lang: Language): string {
+  const names = new Map(products.map((p) => [p.id, lang === 'bn' ? p.nameBn || p.name : p.name] as const));
+  const base =
+    lang === 'bn'
+      ? `সম্পন্ন: ${result.updated}টি আপডেট, ${result.deleted}টি মোছা হয়েছে`
+      : `Done: ${result.updated} updated, ${result.deleted} deleted`;
+  if (result.skipped.length === 0) return lang === 'bn' ? `${base}।` : `${base}.`;
+  const skips = result.skipped
+    .map((s) => {
+      const reason = BULK_SKIP_REASONS[s.reason]?.[lang] ?? s.reason;
+      return `${names.get(s.id) || s.id} — ${reason}`;
+    })
+    .join('; ');
+  return lang === 'bn' ? `${base}; বাদ পড়েছে: ${skips}।` : `${base}, skipped: ${skips}.`;
+}
+
+/**
+ * Selection after a bulk action: adjust/price keep the selection (so a
+ * second bulk action needs no re-selecting); delete drops only the
+ * ids that were actually deleted, keeping skipped ids selected for a
+ * retry. Previously every bulk action cleared the whole selection.
+ */
+export function remainingSelectionAfterBulk(
+  selected: ReadonlySet<string>,
+  requestedIds: string[],
+  action: 'adjust-stock' | 'set-price' | 'delete',
+  skipped: Array<{ id: string }>,
+): Set<string> {
+  if (action !== 'delete') return new Set(selected);
+  const skippedIds = new Set(skipped.map((s) => s.id));
+  const next = new Set(selected);
+  requestedIds.forEach((id) => {
+    if (!skippedIds.has(id)) next.delete(id);
+  });
+  return next;
+}
+
+/** Signed delta for preview labels: 5 -> "+5", -3 -> "-3". */
+export function formatStockDelta(delta: number): string {
+  return delta > 0 ? `+${delta}` : `${delta}`;
+}
+
+// ------------------------------------------------------------------
+// ADDITIONAL SCOPE — manual-add efficiency. Pure helpers, unit-tested
+// in tests/additional-scope.test.ts. The manual form stays fully usable
+// without voice or camera: these helpers only prefill, never gate.
+// ------------------------------------------------------------------
+
+export const MANUAL_ADD_DEFAULTS_KEY = 'amar-last-product-defaults';
+
+export interface ManualAddDefaults {
+  category?: string;
+  unit?: string;
+}
+
+function manualAddStorage(): Storage | null {
+  try {
+    return typeof localStorage !== 'undefined' ? localStorage : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Last-used category/unit, or {} when nothing was saved yet. Never throws. */
+export function getLastManualAddDefaults(): ManualAddDefaults {
+  try {
+    const raw = manualAddStorage()?.getItem(MANUAL_ADD_DEFAULTS_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as ManualAddDefaults;
+    return {
+      category: typeof parsed.category === 'string' && parsed.category.trim() ? parsed.category : undefined,
+      unit: typeof parsed.unit === 'string' && parsed.unit.trim() ? parsed.unit : undefined,
+    };
+  } catch {
+    return {};
+  }
+}
+
+export function saveLastManualAddDefaults(defaults: ManualAddDefaults): void {
+  try {
+    manualAddStorage()?.setItem(MANUAL_ADD_DEFAULTS_KEY, JSON.stringify(defaults));
+  } catch {
+    // Defaults are a convenience only; a storage failure must never
+    // block saving the product itself.
+  }
+}
+
+/**
+ * New-product form defaults: last-used category/unit win over the
+ * store fallback. Price/cost are NEVER carried over — carrying a price
+ * could silently save the wrong price on the next product.
+ */
+export function resolveManualAddDefaults(
+  fallbackCategory: string,
+  fallbackUnit: string,
+): { category: string; unit: string } {
+  const last = getLastManualAddDefaults();
+  return { category: last.category || fallbackCategory, unit: last.unit || fallbackUnit };
+}
+
+/**
+ * Quick-add ("Add similar") form: copies category, unit, price, cost
+ * and supplier from an existing product, but clears name, Bangla name,
+ * barcode and stock and drops the id — so the copy can never overwrite
+ * the original or inherit its barcode. The shopkeeper only types a new
+ * name (and stock) before saving.
+ */
+export function buildSimilarProductForm(product: Product): Partial<Product> {
+  return {
+    name: '',
+    nameBn: '',
+    category: product.category,
+    price: product.price,
+    cost: product.cost,
+    stock: 0,
+    unit: product.unit,
+    barcode: '',
+    supplier: product.supplier,
+    image: '',
+  };
+}
+
+export type ManualFormErrorField = 'name' | 'price' | 'cost' | 'stock' | 'barcode' | 'expiryDate';
+
+/**
+ * Field-level manual-form validation. Returns one error code per bad
+ * field (empty = saveable). The component renders each code as a
+ * visible inline message — a failed save is never a silent no-op.
+ * Stock must be a whole number; price/cost finite and >= 0.
+ */
+export function validateManualProductForm(
+  formData: Partial<Product>,
+  opts: { isMedicine: boolean },
+): ManualFormErrorField[] {
+  const errors: ManualFormErrorField[] = [];
+  if (!formData.name?.trim()) errors.push('name');
+  if (!Number.isFinite(Number(formData.price)) || Number(formData.price) < 0) errors.push('price');
+  if (!Number.isFinite(Number(formData.cost)) || Number(formData.cost) < 0) errors.push('cost');
+  const stock = Number(formData.stock);
+  if (!Number.isInteger(stock) || stock < 0) errors.push('stock');
+  if (formData.barcode && (formData.barcode.length > 128 || /\s/.test(formData.barcode))) errors.push('barcode');
+  if (opts.isMedicine && !formData.expiryDate) errors.push('expiryDate');
+  return errors;
+}
+
+export const MANUAL_FORM_ERROR_MESSAGE_KEY: Record<ManualFormErrorField, string> = {
+  name: 'invFormErrorName',
+  price: 'invFormErrorPrice',
+  cost: 'invFormErrorCost',
+  stock: 'invFormErrorStock',
+  barcode: 'invFormErrorBarcode',
+  expiryDate: 'invFormErrorExpiry',
+};
+
+// Every inventory UI string below lives in TRANSLATIONS (both locales).
+// {n}, {delta} and {price} are replaced at the call site.
+/** Inventory strings now live in the shared TRANSLATIONS (constants.ts,
+ * `inv*` keys) — the local INV_TEXT dict was promoted (Wave 2, Item 5).
+ * invText() is kept as a thin compatibility wrapper over TRANSLATIONS so
+ * the existing inventory-efficiency tests keep passing unchanged; the
+ * component itself now reads t.inv* directly. */
+export function invText(
+  lang: Language,
+  key:
+    | 'searchPlaceholder'
+    | 'clearSearch'
+    | 'itemsShown'
+    | 'lowInView'
+    | 'lowStockToggle'
+    | 'showAll'
+    | 'lowStockTitle'
+    | 'selectAllShown'
+    | 'deselectShown'
+    | 'clearSelection'
+    | 'bulkSelected'
+    | 'selectedHidden'
+    | 'adjustStock'
+    | 'adjustStockPreview'
+    | 'setPrice'
+    | 'setPricePreview'
+    | 'deleteSelected'
+    | 'deleteSelectedPreview'
+    | 'bulkNeedSelection'
+    | 'bulkDeltaInvalid'
+    | 'bulkPriceInvalid'
+    | 'bulkDeleteConfirm'
+    | 'bulkFailed'
+    | 'stockMinus'
+    | 'stockPlus'
+    | 'saveAddAnother'
+    | 'addFromBarcode'
+    | 'noMatch'
+    | 'noLowInSearch'
+    | 'noLowStock'
+    | 'noProducts',
+  replacements?: Record<string, string | number>,
+): string {
+  const sharedKey = `inv${key[0].toUpperCase()}${key.slice(1)}`;
+  const dict = TRANSLATIONS[lang] as unknown as Record<string, string>;
+  const fallback = TRANSLATIONS.en as unknown as Record<string, string>;
+  let text: string = dict[sharedKey] ?? fallback[sharedKey] ?? '';
+  if (replacements) {
+    for (const [name, value] of Object.entries(replacements)) {
+      text = text.replace(`{${name}}`, String(value));
+    }
+  }
+  return text;
+}
 
 interface InventoryProps {
   lang: Language;
@@ -50,6 +374,10 @@ const Inventory: React.FC<InventoryProps> = ({ lang }) => {
   const [showUpsell, setShowUpsell] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [formData, setFormData] = useState<Partial<Product>>({});
+  // Additional scope — visible field errors (never a silent no-op) and
+  // the voice-to-add panel toggle. Manual add stays independent of both.
+  const [formErrors, setFormErrors] = useState<ManualFormErrorField[]>([]);
+  const [showVoiceAdd, setShowVoiceAdd] = useState(false);
   // Phase 6 state
   const [showLowOnly, setShowLowOnly] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -63,6 +391,9 @@ const Inventory: React.FC<InventoryProps> = ({ lang }) => {
   const [historyProductId, setHistoryProductId] = useState<string | null>(null);
   const [historyLogs, setHistoryLogs] = useState<InventoryLog[]>([]);
   const [historyError, setHistoryError] = useState('');
+  // Item 5 — guards one in-flight quick stock tap per product so a
+  // double-tap on a phone cannot apply the same +/- twice.
+  const [quickAdjustingId, setQuickAdjustingId] = useState<string | null>(null);
 
   // Real-time Profit Calculation for the Form
   const [calculatedMargin, setCalculatedMargin] = useState<{ profit: number; percent: number } | null>(null);
@@ -88,18 +419,31 @@ const Inventory: React.FC<InventoryProps> = ({ lang }) => {
   const currentCategory: StoreCategory = user?.storeCategory || 'grocery';
   const theme = STORE_THEMES[currentCategory] || STORE_THEMES['grocery'];
   const ThemeIcon = theme.icon;
-  const filteredProducts = products.filter((product) => {
-    const search = query.trim().toLocaleLowerCase();
-    return (
-      !search ||
-      [product.name, product.nameBn, product.category, product.barcode].some((value) =>
-        value?.toLocaleLowerCase().includes(search),
-      )
-    );
-  });
-  const lowStockCount = products.filter((product) => product.stock < 10).length;
-  const lowStockProducts = products.filter((product) => product.stock < 10);
-  const visibleProducts = showLowOnly ? filteredProducts.filter((p) => p.stock < 10) : filteredProducts;
+  // Item 5 (a) — the search box stays instant (raw `query` drives the
+  // input) while the filtered list follows a deferred query, so typing
+  // never waits on filtering/rendering a large list. The haystack is
+  // indexed once per products change, not per keystroke.
+  const deferredQuery = useDeferredValue(query);
+  const filteredProducts = useMemo(() => searchInventory(products, deferredQuery), [products, deferredQuery]);
+  // Item 5 (b) — low-stock counts are computed on the FILTERED list, so
+  // the toggle badge, the summary line and the low-stock chips always
+  // agree with what the search actually shows (previously the badge
+  // showed the unfiltered total while a search was active).
+  const filteredLowStock = useMemo(() => lowStockProducts(filteredProducts), [filteredProducts]);
+  const visibleProducts = showLowOnly ? filteredLowStock : filteredProducts;
+  const allVisibleSelected = visibleProducts.length > 0 && visibleProducts.every((p) => selectedIds.has(p.id));
+  const hiddenSelection = hiddenSelectedCount(
+    selectedIds,
+    visibleProducts.map((p) => p.id),
+  );
+  // Item 5 (c) — live bulk preview: the action buttons themselves state
+  // the exact effect (delta/price + item count) before the tap, so the
+  // single-tap execution the Phase 6 E2E relies on needs no extra
+  // confirmation step, yet nothing executes blind.
+  const bulkDeltaNumber = bulkDelta.trim() === '' ? NaN : Number(bulkDelta);
+  const bulkDeltaValid = Number.isInteger(bulkDeltaNumber) && bulkDeltaNumber !== 0;
+  const bulkPriceNumber = bulkPrice.trim() === '' ? NaN : Number(bulkPrice);
+  const bulkPriceValid = Number.isFinite(bulkPriceNumber) && bulkPriceNumber >= 0;
 
   // Phase 6 — barcode lookup (server-side route; typed entry and camera
   // scan both land here, so both paths behave identically).
@@ -145,29 +489,57 @@ const Inventory: React.FC<InventoryProps> = ({ lang }) => {
     setBulkMessage('');
     const ids = Array.from(selectedIds);
     if (ids.length === 0) {
-      setBulkMessage('Select at least one product first.');
+      setBulkMessage(t.invBulkNeedSelection);
       return;
     }
-    if (action === 'delete' && !window.confirm(`Delete ${ids.length} selected product(s)? This cannot be undone.`))
+    // Item 5 (c) — client-side guards so a blank delta no longer
+    // silently "adjusts by 0" and a blank price is never sent.
+    if (action === 'adjust-stock' && !bulkDeltaValid) {
+      setBulkMessage(t.invBulkDeltaInvalid);
       return;
+    }
+    if (action === 'set-price' && !bulkPriceValid) {
+      setBulkMessage(t.invBulkPriceInvalid);
+      return;
+    }
+    if (action === 'delete' && !window.confirm(t.invBulkDeleteConfirm.replace('{n}', String(ids.length)))) return;
+    // Capture names BEFORE refetch: skip reporting needs the names of
+    // products that may be gone from the list afterwards.
+    const productsBefore = [...products];
     try {
       const result = await StorageService.bulkProducts({
         ids,
         action,
-        delta: action === 'adjust-stock' ? Number(bulkDelta) : undefined,
-        price: action === 'set-price' ? Number(bulkPrice) : undefined,
+        delta: action === 'adjust-stock' ? bulkDeltaNumber : undefined,
+        price: action === 'set-price' ? bulkPriceNumber : undefined,
         confirmed: action === 'delete' ? true : undefined,
       });
-      setBulkMessage(
-        `Done: ${result.updated} updated, ${result.deleted} deleted` +
-          (result.skipped.length
-            ? `, ${result.skipped.length} skipped (${result.skipped.map((s) => s.reason).join(', ')})`
-            : '.'),
-      );
-      setSelectedIds(new Set());
+      setBulkMessage(formatBulkMessage(result, productsBefore, lang));
+      // Item 5 (c) — selection survives the action: adjust/price keep
+      // it for a follow-up action; delete drops only what was deleted.
+      setSelectedIds(remainingSelectionAfterBulk(selectedIds, ids, action, result.skipped));
       await refetchProducts();
     } catch (error: any) {
-      setBulkMessage(error?.body?.message || error?.message || 'Bulk action failed.');
+      setBulkMessage(error?.body?.message || error?.message || t.invBulkFailed);
+    }
+  };
+
+  // Item 5 (d) — one-tap stock +/- on the row itself. Before: Edit tap
+  // -> scroll to the stock field -> type -> Save tap (4 interactions).
+  // Now: 1 tap per unit, guarded against double-taps while in flight.
+  const handleQuickAdjust = async (product: Product, delta: number) => {
+    if (quickAdjustingId !== null) return;
+    const next = product.stock + delta;
+    if (next < 0) return;
+    setQuickAdjustingId(product.id);
+    setSaveError('');
+    try {
+      await StorageService.saveProduct({ ...product, stock: next });
+      await refetchProducts();
+    } catch (error: any) {
+      setSaveError(error?.body?.message || error?.message || 'Could not update stock.');
+    } finally {
+      setQuickAdjustingId(null);
     }
   };
 
@@ -178,8 +550,13 @@ const Inventory: React.FC<InventoryProps> = ({ lang }) => {
     await refetchProducts();
   };
 
-  const handleOpenModal = (product?: Product) => {
+  // Additional scope — open the form for a new product. `overrides`
+  // are applied in the SAME setFormData call as the defaults, so a
+  // barcode passed from the barcode panel cannot be lost to React
+  // batching (the old two-call pattern relied on queue order).
+  const handleOpenModal = (product?: Product, overrides?: Partial<Product>) => {
     setSaveError('');
+    setFormErrors([]);
     if (!product) {
       if (user?.plan === 'free' && products.length >= LIMITS.FREE_PRODUCT_LIMIT) {
         setShowUpsell(true);
@@ -191,18 +568,37 @@ const Inventory: React.FC<InventoryProps> = ({ lang }) => {
       setEditingProduct(product);
       setFormData({ ...product });
     } else {
+      // Smart defaults: last-used category/unit, else store fallback.
+      const defaults = resolveManualAddDefaults('General', currentCategory === 'medicine' ? 'strip' : 'pcs');
       setEditingProduct(null);
       setFormData({
         name: '',
         nameBn: '',
-        category: 'General',
+        category: defaults.category,
         price: 0,
         cost: 0,
         stock: 0,
-        unit: currentCategory === 'medicine' ? 'strip' : 'pcs',
+        unit: defaults.unit,
         image: '',
+        ...overrides,
       });
     }
+    setIsModalOpen(true);
+  };
+
+  // Additional scope — quick-add for repeat items: one tap on a row
+  // opens a NEW product form prefilled from that row (category, unit,
+  // price, cost, supplier). Name/barcode/stock are blank, so the copy
+  // can never silently overwrite the original.
+  const handleOpenSimilar = (product: Product) => {
+    if (user?.plan === 'free' && products.length >= LIMITS.FREE_PRODUCT_LIMIT) {
+      setShowUpsell(true);
+      return;
+    }
+    setSaveError('');
+    setFormErrors([]);
+    setEditingProduct(null);
+    setFormData(buildSimilarProductForm(product));
     setIsModalOpen(true);
   };
 
@@ -234,15 +630,28 @@ const Inventory: React.FC<InventoryProps> = ({ lang }) => {
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
+    await saveForm('close');
+  };
+
+  // Item 5 (d) — 'another' keeps the modal open on a blank form after a
+  // successful create, so adding N products costs N+1 taps (Add, then
+  // Save & add another … , Save) instead of 2N (Add + Save each time).
+  // Validation, alerts and the free-limit upsell path are identical.
+  const saveForm = async (mode: 'close' | 'another') => {
     if (isSaving) return;
     setSaveError('');
+    setFormErrors([]);
 
-    // --- STORE-WISE SYSTEM RULES VALIDATION ---
-    if (currentCategory === 'medicine') {
-      if (!formData.expiryDate) {
-        alert('⚠️ Pharmacy System Alert:\nExpiry Date is required for medicines to ensure patient safety.');
-        return;
-      }
+    // Additional scope — field-level validation FIRST, rendered inline
+    // under each bad field plus a summary, so a failed save is never a
+    // silent no-op. The medicine expiry rule is now a visible field
+    // error instead of an alert-only block. Clothing size/color and
+    // cost>price remain explicit confirms (user decision, not silence).
+    const fieldErrors = validateManualProductForm(formData, { isMedicine: currentCategory === 'medicine' });
+    if (fieldErrors.length > 0) {
+      setFormErrors(fieldErrors);
+      setSaveError(t.invFormErrorSummary);
+      return;
     }
 
     if (currentCategory === 'clothing') {
@@ -257,23 +666,12 @@ const Inventory: React.FC<InventoryProps> = ({ lang }) => {
       )
         return;
     }
-    if (
-      !formData.name?.trim() ||
-      !Number.isFinite(Number(formData.price)) ||
-      !Number.isFinite(Number(formData.cost)) ||
-      !Number.isFinite(Number(formData.stock)) ||
-      Number(formData.price) < 0 ||
-      Number(formData.cost) < 0 ||
-      Number(formData.stock) < 0
-    ) {
-      setSaveError('Enter a product name and valid non-negative price, cost, and stock values.');
-      return;
-    }
     // -------------------------------------------
 
     const productToSave: any = {
       id: editingProduct ? editingProduct.id : crypto.randomUUID(),
-      name: formData.name.trim(),
+      // Validation above already returned unless name is non-blank.
+      name: (formData.name || '').trim(),
       nameBn: formData.nameBn || formData.name || '',
       category: formData.category || 'General',
       price: Number(formData.price) || 0,
@@ -313,7 +711,27 @@ const Inventory: React.FC<InventoryProps> = ({ lang }) => {
     setIsSaving(true);
     try {
       await StorageService.saveProduct(productToSave as Product);
-      setIsModalOpen(false);
+      // Additional scope — remember last-used category/unit for the
+      // next manual add (price/cost are deliberately not remembered).
+      if (!editingProduct) saveLastManualAddDefaults({ category: productToSave.category, unit: productToSave.unit });
+      if (mode === 'another' && !editingProduct) {
+        setEditingProduct(null);
+        setFormErrors([]);
+        setFormData({
+          name: '',
+          nameBn: '',
+          // 'Save & add another' keeps the just-saved category/unit
+          // (previously it reset to General/pcs, costing two retypes).
+          category: productToSave.category,
+          price: 0,
+          cost: 0,
+          stock: 0,
+          unit: productToSave.unit,
+          image: '',
+        });
+      } else {
+        setIsModalOpen(false);
+      }
       await refetchProducts();
     } catch (error: any) {
       if (error.message === 'FREE_LIMIT_REACHED') {
@@ -331,6 +749,23 @@ const Inventory: React.FC<InventoryProps> = ({ lang }) => {
     if (!dateString) return false;
     return new Date(dateString) < new Date();
   };
+
+  // Additional scope — visible text for each field error code.
+  const formErrorText: Record<ManualFormErrorField, string> = {
+    name: t.invFormErrorName,
+    price: t.invFormErrorPrice,
+    cost: t.invFormErrorCost,
+    stock: t.invFormErrorStock,
+    barcode: t.invFormErrorBarcode,
+    expiryDate: t.invFormErrorExpiry,
+  };
+  const fieldError = (field: ManualFormErrorField) =>
+    formErrors.includes(field) ? (
+      <p data-testid={`inventory-form-error-${field}`} role="alert" className="text-xs text-red-700 mt-1">
+        {formErrorText[field]}
+      </p>
+    ) : null;
+  const clearFieldError = (field: ManualFormErrorField) => setFormErrors((prev) => prev.filter((f) => f !== field));
 
   // Helper styles based on theme color
   const getThemeColorClass = (type: 'text' | 'bg' | 'border' | 'button') => {
@@ -409,13 +844,25 @@ const Inventory: React.FC<InventoryProps> = ({ lang }) => {
             data-testid="inventory-search"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search by product, Bengali name, category, or barcode"
+            placeholder={t.invSearchPlaceholder}
             aria-label="Search inventory"
-            className="w-full pl-10 pr-3 py-2.5 rounded-lg border border-gray-200 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+            className="w-full pl-10 pr-10 py-2.5 rounded-lg border border-gray-200 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
           />
+          {query && (
+            <button
+              type="button"
+              data-testid="inventory-search-clear"
+              aria-label={t.invClearSearch}
+              onClick={() => setQuery('')}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-700 text-lg leading-none"
+            >
+              ×
+            </button>
+          )}
         </label>
         <div className="text-sm text-gray-600 whitespace-nowrap">
-          {filteredProducts.length} items · {lowStockCount} low stock
+          {t.invItemsShown.replace('{n}', String(visibleProducts.length))} ·{' '}
+          {t.invLowInView.replace('{n}', String(filteredLowStock.length))}
         </div>
         <button
           data-testid="inventory-low-stock-toggle"
@@ -423,7 +870,7 @@ const Inventory: React.FC<InventoryProps> = ({ lang }) => {
           aria-pressed={showLowOnly}
           className={`px-3 py-2 rounded-lg text-sm font-bold border ${showLowOnly ? 'bg-red-600 text-white border-red-600' : 'bg-white text-red-700 border-red-200'}`}
         >
-          {showLowOnly ? 'Show all' : `⚠ Low stock (${lowStockCount})`}
+          {showLowOnly ? t.invShowAll : t.invLowStockToggle.replace('{n}', String(filteredLowStock.length))}
         </button>
       </div>
 
@@ -450,9 +897,26 @@ const Inventory: React.FC<InventoryProps> = ({ lang }) => {
           </AdButton>
         </div>
         {barcodeError && (
-          <p role="alert" className="text-sm text-red-700 mt-2">
-            {barcodeError}
-          </p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <p role="alert" className="text-sm text-red-700">
+              {barcodeError}
+            </p>
+          </div>
+        )}
+        {/* Additional scope — barcode prefill no longer waits for a
+            failed lookup: any typed/scanned code with no matching
+            product offers one tap into the form with the code filled
+            in (same testid as before, same single setFormData call). */}
+        {barcodeInput.trim() && !barcodeResult && (
+          <div className="mt-2">
+            <AdButton
+              variant="ghost"
+              testid="inventory-barcode-add-new"
+              onClick={() => handleOpenModal(undefined, { barcode: barcodeInput.trim() })}
+            >
+              {t.invAddFromBarcode}
+            </AdButton>
+          </div>
         )}
         {barcodeResult && (
           <div data-testid="inventory-barcode-result" className="mt-2 flex flex-wrap items-center gap-2 text-sm">
@@ -506,21 +970,39 @@ const Inventory: React.FC<InventoryProps> = ({ lang }) => {
         />
       </div>
 
-      {/* Phase 6 — low-stock list (visible badges, one tap to the product). */}
-      {lowStockProducts.length > 0 && (
+      {/* Additional scope — voice-to-add entry point. The panel saves
+          through the same product-create API and refetches this list;
+          manual add above and below stays fully usable without it. */}
+      <div className="mb-4">
+        <AdButton testid="inventory-voice-add-open" variant="ghost" onClick={() => setShowVoiceAdd((v) => !v)}>
+          {t.invVoiceAddOpen}
+        </AdButton>
+        {showVoiceAdd && (
+          <div className="mt-2">
+            <VoiceAddProduct lang={lang} onSaved={() => void refetchProducts()} />
+          </div>
+        )}
+      </div>
+
+      {/* Phase 6 — low-stock list (visible badges, one tap to the product).
+          Item 5 (b): chips follow the active search (filteredLowStock),
+          so the count and the chips always match the list on screen,
+          and the panel hides in low-stock-only view, where the table
+          already IS that list. Chip taps use the displayed (Bn/En) name. */}
+      {filteredLowStock.length > 0 && !showLowOnly && (
         <AdCard testid="inventory-low-stock-list" className="mb-4">
           <p className="text-sm font-bold text-red-700 mb-2">
-            ⚠ Low stock — {lowStockProducts.length} item(s) under 10
+            {t.invLowStockTitle.replace('{n}', String(filteredLowStock.length))}
           </p>
           <div className="flex flex-wrap gap-2">
-            {lowStockProducts.map((p) => (
+            {filteredLowStock.map((p) => (
               <button
                 key={p.id}
                 data-testid={`inventory-low-stock-${p.id}`}
-                onClick={() => setQuery(p.name)}
+                onClick={() => setQuery(lang === 'bn' ? p.nameBn || p.name : p.name)}
                 className="px-2 py-1 rounded-full text-xs font-bold bg-red-100 text-red-700"
               >
-                {p.name} · {p.stock} {p.unit}
+                {lang === 'bn' ? p.nameBn || p.name : p.name} · {p.stock} {p.unit}
               </button>
             ))}
           </div>
@@ -530,7 +1012,12 @@ const Inventory: React.FC<InventoryProps> = ({ lang }) => {
       {/* Phase 6 — bulk actions (safe set: stock adjust, price set, delete
           with confirmation; per-product skips are reported, never hidden). */}
       <AdCard testid="inventory-bulk-panel" className="mb-4">
-        <p className="text-sm font-bold text-gray-800 mb-2">Bulk actions — {selectedIds.size} selected</p>
+        <p className="text-sm font-bold text-gray-800 mb-2">
+          {t.invBulkSelected.replace('{n}', String(selectedIds.size))}
+        </p>
+        {hiddenSelection > 0 && (
+          <p className="text-xs text-amber-700 mb-2">{t.invSelectedHidden.replace('{n}', String(hiddenSelection))}</p>
+        )}
         <div className="flex flex-wrap items-center gap-2">
           <div className="w-28">
             <AdInput
@@ -543,7 +1030,11 @@ const Inventory: React.FC<InventoryProps> = ({ lang }) => {
             />
           </div>
           <AdButton testid="inventory-bulk-adjust" variant="ghost" onClick={() => void handleBulk('adjust-stock')}>
-            Adjust stock
+            {selectedIds.size > 0 && bulkDeltaValid
+              ? t.invAdjustStockPreview
+                  .replace('{delta}', formatStockDelta(bulkDeltaNumber))
+                  .replace('{n}', String(selectedIds.size))
+              : t.invAdjustStock}
           </AdButton>
           <div className="w-28">
             <AdInput
@@ -556,20 +1047,47 @@ const Inventory: React.FC<InventoryProps> = ({ lang }) => {
             />
           </div>
           <AdButton testid="inventory-bulk-price-btn" variant="ghost" onClick={() => void handleBulk('set-price')}>
-            Set price
+            {selectedIds.size > 0 && bulkPriceValid
+              ? t.invSetPricePreview
+                  .replace('{price}', String(bulkPriceNumber))
+                  .replace('{n}', String(selectedIds.size))
+              : t.invSetPrice}
           </AdButton>
           <AdButton testid="inventory-bulk-delete" variant="danger" onClick={() => void handleBulk('delete')}>
-            Delete selected
+            {selectedIds.size > 0
+              ? t.invDeleteSelectedPreview.replace('{n}', String(selectedIds.size))
+              : t.invDeleteSelected}
           </AdButton>
           <button
             data-testid="inventory-select-all"
-            onClick={() => setSelectedIds(new Set(visibleProducts.map((p) => p.id)))}
+            onClick={() =>
+              setSelectedIds(
+                unionSelection(
+                  selectedIds,
+                  visibleProducts.map((p) => p.id),
+                ),
+              )
+            }
             className="text-sm font-bold text-emerald-700 underline"
           >
-            Select all shown
+            {t.invSelectAllShown}
+          </button>
+          <button
+            data-testid="inventory-deselect-shown"
+            onClick={() =>
+              setSelectedIds(
+                deselectVisibleSelection(
+                  selectedIds,
+                  visibleProducts.map((p) => p.id),
+                ),
+              )
+            }
+            className="text-sm font-bold text-gray-600 underline"
+          >
+            {t.invDeselectShown}
           </button>
           <button onClick={() => setSelectedIds(new Set())} className="text-sm font-bold text-gray-600 underline">
-            Clear selection
+            {t.invClearSelection}
           </button>
         </div>
         {bulkMessage && (
@@ -607,8 +1125,26 @@ const Inventory: React.FC<InventoryProps> = ({ lang }) => {
         <table className="w-full text-left border-collapse min-w-[800px]">
           <thead className="bg-gray-50 text-gray-600 font-medium text-sm sticky top-0 z-10 shadow-sm">
             <tr>
-              <th className="p-4" aria-label="Select">
-                ☐
+              <th className="p-4">
+                <input
+                  type="checkbox"
+                  data-testid="inventory-select-all-visible"
+                  checked={allVisibleSelected}
+                  onChange={() =>
+                    setSelectedIds(
+                      allVisibleSelected
+                        ? deselectVisibleSelection(
+                            selectedIds,
+                            visibleProducts.map((p) => p.id),
+                          )
+                        : unionSelection(
+                            selectedIds,
+                            visibleProducts.map((p) => p.id),
+                          ),
+                    )
+                  }
+                  aria-label={t.invSelectAllShown}
+                />
               </th>
               <th className="p-4">{t.item}</th>
 
@@ -639,9 +1175,13 @@ const Inventory: React.FC<InventoryProps> = ({ lang }) => {
             {visibleProducts.length === 0 && !loading && (
               <tr>
                 <td colSpan={11} className="p-10 text-center text-gray-500">
-                  {query || showLowOnly
-                    ? 'No products match that search.'
-                    : 'No products yet. Use “Add Product” to start your inventory.'}
+                  {!query && !showLowOnly
+                    ? t.invNoProducts
+                    : showLowOnly
+                      ? query
+                        ? t.invNoLowInSearch
+                        : t.invNoLowStock
+                      : t.invNoMatch}
                 </td>
               </tr>
             )}
@@ -745,11 +1285,39 @@ const Inventory: React.FC<InventoryProps> = ({ lang }) => {
                 <td className="p-4">
                   <div className="flex items-center justify-center gap-2">
                     <button
+                      data-testid={`inventory-stock-minus-${p.id}`}
+                      disabled={p.stock <= 0 || quickAdjustingId === p.id}
+                      onClick={() => void handleQuickAdjust(p, -1)}
+                      className="px-1.5 py-0.5 text-base font-bold text-gray-700 hover:bg-gray-100 rounded disabled:opacity-40"
+                      aria-label={`${t.invStockMinus} ${p.name}`}
+                    >
+                      −
+                    </button>
+                    <button
+                      data-testid={`inventory-stock-plus-${p.id}`}
+                      disabled={quickAdjustingId === p.id}
+                      onClick={() => void handleQuickAdjust(p, 1)}
+                      className="px-1.5 py-0.5 text-base font-bold text-gray-700 hover:bg-gray-100 rounded disabled:opacity-40"
+                      aria-label={`${t.invStockPlus} ${p.name}`}
+                    >
+                      +
+                    </button>
+                    <button
                       onClick={() => handleOpenModal(p)}
                       className="p-1.5 text-blue-600 hover:bg-blue-50 rounded"
                       aria-label={`Edit ${p.name}`}
                     >
                       <Edit2 size={16} />
+                    </button>
+                    {/* Additional scope — quick-add for repeat items. */}
+                    <button
+                      data-testid={`inventory-add-similar-${p.id}`}
+                      onClick={() => handleOpenSimilar(p)}
+                      className="p-1.5 text-xs font-bold text-emerald-700 hover:bg-emerald-50 rounded"
+                      aria-label={`${t.invAddSimilar} ${p.name}`}
+                      title={t.invAddSimilar}
+                    >
+                      + {t.invAddSimilar}
                     </button>
                     <button
                       onClick={() => handleDelete(p.id)}
@@ -837,11 +1405,20 @@ const Inventory: React.FC<InventoryProps> = ({ lang }) => {
                     <input
                       type="text"
                       required
+                      autoFocus
+                      data-testid="inventory-form-name"
                       className="input-field"
                       value={formData.name || ''}
-                      onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                      onChange={(e) => {
+                        clearFieldError('name');
+                        setFormData({ ...formData, name: e.target.value });
+                      }}
                     />
+                    {fieldError('name')}
                   </div>
+                  {!editingProduct && (
+                    <p className="col-span-2 text-[11px] text-gray-500 -mt-2">{t.invSmartDefaultsHint}</p>
+                  )}
                   <div className="col-span-2">
                     <label className="block text-sm font-medium text-gray-700 mb-1">Bangla Name</label>
                     <input
@@ -856,15 +1433,21 @@ const Inventory: React.FC<InventoryProps> = ({ lang }) => {
                     <input
                       type="number"
                       required
+                      data-testid="inventory-form-stock"
                       className="input-field"
                       value={formData.stock || ''}
-                      onChange={(e) => setFormData({ ...formData, stock: Number(e.target.value) })}
+                      onChange={(e) => {
+                        clearFieldError('stock');
+                        setFormData({ ...formData, stock: Number(e.target.value) });
+                      }}
                     />
+                    {fieldError('stock')}
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">Unit</label>
                     <input
                       type="text"
+                      data-testid="inventory-form-unit"
                       className="input-field"
                       value={formData.unit || ''}
                       onChange={(e) => setFormData({ ...formData, unit: e.target.value })}
@@ -875,6 +1458,7 @@ const Inventory: React.FC<InventoryProps> = ({ lang }) => {
                     <label className="block text-sm font-medium text-gray-700 mb-1">Category</label>
                     <input
                       type="text"
+                      data-testid="inventory-form-category"
                       className="input-field"
                       value={formData.category || ''}
                       onChange={(e) => setFormData({ ...formData, category: e.target.value })}
@@ -886,11 +1470,16 @@ const Inventory: React.FC<InventoryProps> = ({ lang }) => {
                       <ScanBarcode size={16} className="absolute top-3 left-3 text-gray-400" />
                       <input
                         type="text"
+                        data-testid="inventory-form-barcode"
                         className="input-field pl-9"
                         value={formData.barcode || ''}
-                        onChange={(e) => setFormData({ ...formData, barcode: e.target.value })}
+                        onChange={(e) => {
+                          clearFieldError('barcode');
+                          setFormData({ ...formData, barcode: e.target.value });
+                        }}
                       />
                     </div>
+                    {fieldError('barcode')}
                   </div>
                 </div>
               </div>
@@ -909,12 +1498,17 @@ const Inventory: React.FC<InventoryProps> = ({ lang }) => {
                         type="number"
                         required
                         min="0"
+                        data-testid="inventory-form-cost"
                         className="input-field pl-7 bg-white border-gray-300 focus:border-emerald-500 focus:ring-emerald-500"
                         value={formData.cost || ''}
-                        onChange={(e) => setFormData({ ...formData, cost: Number(e.target.value) })}
+                        onChange={(e) => {
+                          clearFieldError('cost');
+                          setFormData({ ...formData, cost: Number(e.target.value) });
+                        }}
                         placeholder="0.00"
                       />
                     </div>
+                    {fieldError('cost')}
                     <p className="text-[10px] text-gray-500 mt-1">Cost to purchase/produce</p>
                   </div>
 
@@ -926,12 +1520,17 @@ const Inventory: React.FC<InventoryProps> = ({ lang }) => {
                         type="number"
                         required
                         min="0"
+                        data-testid="inventory-form-price"
                         className="input-field pl-7 font-bold text-emerald-900 bg-white border-emerald-300 focus:border-emerald-500 focus:ring-emerald-500"
                         value={formData.price || ''}
-                        onChange={(e) => setFormData({ ...formData, price: Number(e.target.value) })}
+                        onChange={(e) => {
+                          clearFieldError('price');
+                          setFormData({ ...formData, price: Number(e.target.value) });
+                        }}
                         placeholder="0.00"
                       />
                     </div>
+                    {fieldError('price')}
                   </div>
                 </div>
 
@@ -988,8 +1587,12 @@ const Inventory: React.FC<InventoryProps> = ({ lang }) => {
                         type="date"
                         className="input-field border-red-200 focus:border-red-500"
                         value={formData.expiryDate || ''}
-                        onChange={(e) => setFormData({ ...formData, expiryDate: e.target.value })}
+                        onChange={(e) => {
+                          clearFieldError('expiryDate');
+                          setFormData({ ...formData, expiryDate: e.target.value });
+                        }}
                       />
+                      {fieldError('expiryDate')}
                     </div>
                   </div>
                 </div>
@@ -1107,21 +1710,36 @@ const Inventory: React.FC<InventoryProps> = ({ lang }) => {
                   {saveError}
                 </p>
               )}
-              <div className="pt-2 flex gap-3 border-t">
-                <button
-                  type="button"
-                  onClick={() => setIsModalOpen(false)}
-                  className="flex-1 py-2.5 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 font-medium"
-                >
-                  {t.cancel}
-                </button>
-                <button
-                  type="submit"
-                  disabled={isSaving}
-                  className={`flex-1 py-2.5 text-white rounded-lg flex justify-center items-center gap-2 font-bold shadow-md disabled:opacity-60 ${getThemeColorClass('button')}`}
-                >
-                  <Save size={18} /> {isSaving ? 'Saving…' : t.save}
-                </button>
+              <div className="pt-2 space-y-2 border-t">
+                <div className="flex gap-3">
+                  <button
+                    type="button"
+                    data-testid="inventory-form-cancel"
+                    onClick={() => setIsModalOpen(false)}
+                    className="flex-1 py-2.5 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 font-medium"
+                  >
+                    {t.cancel}
+                  </button>
+                  <button
+                    type="submit"
+                    data-testid="inventory-form-save"
+                    disabled={isSaving}
+                    className={`flex-1 py-2.5 text-white rounded-lg flex justify-center items-center gap-2 font-bold shadow-md disabled:opacity-60 ${getThemeColorClass('button')}`}
+                  >
+                    <Save size={18} /> {isSaving ? 'Saving…' : t.save}
+                  </button>
+                </div>
+                {!editingProduct && (
+                  <button
+                    type="button"
+                    data-testid="inventory-save-add-another"
+                    disabled={isSaving}
+                    onClick={() => void saveForm('another')}
+                    className="w-full py-2.5 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 font-medium disabled:opacity-60"
+                  >
+                    {t.invSaveAddAnother}
+                  </button>
+                )}
               </div>
             </form>
           </div>

@@ -21,7 +21,7 @@ test('owner sale with cash change: UI checkout, server totals, stock deduct', as
 
   // Invoice modal shows the server-saved sale with the change.
   await expect(page.getByTestId('invoice')).toBeVisible();
-  await expect(page.getByTestId('invoice')).toContainText('৳20.00');
+  await expect(page.getByTestId('invoice')).toContainText('৳২০.০০');
 
   // Server side: totals recalculated by the server, stock deducted once.
   const sales = await getSales(page);

@@ -24,6 +24,11 @@ const listeners = new Set<SyncListener>();
 
 let isSyncing = false;
 
+// Wave 2 (second addition) — navigator is undefined outside the
+// browser (unit tests, SSR). Every online check goes through here so
+// a missing navigator reads as offline instead of throwing.
+const isOnline = () => typeof navigator !== 'undefined' && navigator.onLine;
+
 function notifyListeners() {
   const outbox = getOutbox();
   const pendingCount = outbox.filter((item) => item.status === 'pending').length;
@@ -32,10 +37,29 @@ function notifyListeners() {
     listener({
       outboxCount: pendingCount,
       failedCount,
-      isOnline: navigator.onLine,
+      isOnline: isOnline(),
       isSyncing,
     });
   }
+}
+
+/** Truthful queue snapshot for UI: never report 0 queued while the
+ *  outbox still holds records. */
+export function getSyncSummary() {
+  const outbox = getOutbox();
+  const pending = outbox.filter((i) => i.status === 'pending');
+  const failed = outbox.filter((i) => i.status === 'failed');
+  const queuedAt = outbox
+    .map((i) => i.queuedAt)
+    .filter(Boolean)
+    .sort();
+  return {
+    pendingCount: pending.length,
+    failedCount: failed.length,
+    totalQueued: pending.length + failed.length,
+    oldestQueuedAt: queuedAt[0] ?? null,
+    lastError: failed[0]?.error ?? null,
+  };
 }
 
 export function getOutbox(): SyncItem[] {
@@ -107,7 +131,7 @@ export function enqueueOfflineSale(sale: any): SyncItem {
   } catch {}
 
   // Attempt immediate flush if currently online
-  if (navigator.onLine) {
+  if (isOnline()) {
     setTimeout(() => {
       flushOutbox().catch(() => {});
     }, 100);
@@ -117,7 +141,7 @@ export function enqueueOfflineSale(sale: any): SyncItem {
 }
 
 export async function flushOutbox(): Promise<{ synced: number; failed: number }> {
-  if (isSyncing || !navigator.onLine) return { synced: 0, failed: 0 };
+  if (isSyncing || !isOnline()) return { synced: 0, failed: 0 };
   isSyncing = true;
   notifyListeners();
 
@@ -176,13 +200,28 @@ export function clearSyncedOutbox() {
   saveOutbox(kept);
 }
 
-/** Move every 'failed' record back to 'pending' so the next flush retries it. */
+/** Move every 'failed' record back to 'pending' so the next flush retries it.
+ *  Wave 2 fix: retryCount is reset to 0 as well — the old code kept the
+ *  count at 5, so the very next failure re-marked the record 'failed'
+ *  without any real retry budget, and the Retry button looked dead. */
 export function retryFailedOutbox() {
   const outbox = getOutbox();
   const updated = outbox.map((i) =>
-    i.status === 'failed' ? { ...i, status: 'pending' as const, error: undefined } : i,
+    i.status === 'failed' ? { ...i, status: 'pending' as const, retryCount: 0, error: undefined } : i,
   );
   saveOutbox(updated);
+}
+
+/** Retry one queued record (pending or failed) by id. Returns false
+ *  when no such record is queued — callers show that, never silence. */
+export function retryOutboxItem(id: string): boolean {
+  const outbox = getOutbox();
+  const found = outbox.some((i) => i.id === id && i.status !== 'synced');
+  if (!found) return false;
+  saveOutbox(
+    outbox.map((i) => (i.id === id ? { ...i, status: 'pending' as const, retryCount: 0, error: undefined } : i)),
+  );
+  return true;
 }
 
 export function subscribeToSync(listener: SyncListener): () => void {
@@ -190,7 +229,7 @@ export function subscribeToSync(listener: SyncListener): () => void {
   listener({
     outboxCount: getOutbox().filter((i) => i.status === 'pending').length,
     failedCount: getOutbox().filter((i) => i.status === 'failed').length,
-    isOnline: navigator.onLine,
+    isOnline: isOnline(),
     isSyncing,
   });
   return () => {
@@ -209,9 +248,13 @@ if (typeof window !== 'undefined') {
   window.addEventListener('offline', () => {
     notifyListeners();
   });
-  // Auto-sync heartbeat every 20 seconds
+  // Auto-sync heartbeat every 20 seconds. Wave 2 fix: 'failed'
+  // records are retried too — the old heartbeat only fired when a
+  // 'pending' record existed, so an all-failed outbox never retried
+  // on its own and looked permanently stuck. flushOutbox itself
+  // retries both pending and failed records.
   setInterval(() => {
-    if (navigator.onLine && getOutbox().some((i) => i.status === 'pending')) {
+    if (isOnline() && getOutbox().some((i) => i.status === 'pending' || i.status === 'failed')) {
       flushOutbox().catch(() => {});
     }
   }, 20000);

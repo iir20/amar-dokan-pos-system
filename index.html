@@ -137,6 +137,10 @@
         </div>
       </div>
     </div>
-    <script type="module" src="./index.tsx"></script>
+    <!-- Absolute entry path on purpose: the app also serves nested
+         routes such as /s/<storeCode> (per-store Smart QR). A relative
+         ./index.tsx would resolve to /s/index.tsx there and React
+         would never load, leaving only the static loader visible. -->
+    <script type="module" src="/index.tsx"></script>
   </body>
 </html>

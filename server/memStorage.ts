@@ -7,6 +7,18 @@ import { loadSnapshot, saveSnapshot, appendOutbox, reviveDates, type Snapshot } 
 
 export const genId = () => crypto.randomUUID();
 
+/** Per-store Smart QR code: 16 hex chars (64 bits) of crypto randomness. */
+export function generateStoreCode(): string {
+  return crypto.randomBytes(8).toString('hex');
+}
+
+function isStoreCodeTaken(code: string): boolean {
+  for (const u of users.values()) {
+    if ((u as any).storeCode === code) return true;
+  }
+  return false;
+}
+
 import { StorageRuleError } from './errors';
 import {
   forecastDemand,
@@ -233,6 +245,7 @@ async function seedDemoData() {
   // Demo Grocery Store Owner & Admin
   const demoOwner: schema.User = {
     id: DEMO_OWNER_ID,
+    storeCode: generateStoreCode(),
     storeName: 'Amar Dokan Super Store',
     storeCategory: 'grocery',
     username: 'admin',
@@ -257,6 +270,7 @@ async function seedDemoData() {
   // Demo Restaurant Store Owner
   const demoRestaurant: schema.User = {
     id: DEMO_RESTAURANT_ID,
+    storeCode: generateStoreCode(),
     storeName: 'Dhaka Biryani & Cafe',
     storeCategory: 'restaurant',
     username: 'dhakacafe',
@@ -594,11 +608,47 @@ export const MemStorage = {
     await seedInMemoryStore();
     return Array.from(users.values());
   },
+  // Per-store Smart QR: exact, case-sensitive code lookup. Returns
+  // null for an unknown code — the caller must answer NOT_FOUND, never
+  // fall through to another store.
+  async getUserByStoreCode(code: string): Promise<schema.User | null> {
+    await seedInMemoryStore();
+    if (typeof code !== 'string' || !code) return null;
+    for (const u of users.values()) {
+      if ((u as any).storeCode === code) return u;
+    }
+    return null;
+  },
+  // Backfill for legacy stores created before store codes existed:
+  // generates and persists a fresh code only when the store has none.
+  async ensureStoreCode(userId: string): Promise<schema.User> {
+    await seedInMemoryStore();
+    const existing = users.get(userId);
+    if (!existing) throw new Error('User not found');
+    if ((existing as any).storeCode) return existing;
+    let storeCode: string;
+    do {
+      storeCode = generateStoreCode();
+    } while (isStoreCodeTaken(storeCode));
+    const updated: schema.User = { ...existing, storeCode };
+    users.set(userId, updated);
+    return updated;
+  },
   async createUser(data: typeof schema.users.$inferInsert): Promise<schema.User> {
     await seedInMemoryStore();
     const id = data.id || genId();
+    // A store gets its Smart QR code at creation; a caller-supplied
+    // code is honoured only if it is well-formed and unused, otherwise
+    // a fresh random code is generated (never a sequential id).
+    let storeCode = (data as any).storeCode;
+    if (typeof storeCode !== 'string' || !/^[A-Za-z0-9_-]{8,64}$/.test(storeCode) || isStoreCodeTaken(storeCode)) {
+      do {
+        storeCode = generateStoreCode();
+      } while (isStoreCodeTaken(storeCode));
+    }
     const user: schema.User = {
       id,
+      storeCode,
       storeName: data.storeName,
       storeCategory: data.storeCategory,
       username: data.username,
@@ -628,6 +678,9 @@ export const MemStorage = {
     const updated: schema.User = {
       ...existing,
       ...data,
+      // A profile update must never silently clear the store's QR
+      // code: an absent storeCode in the patch keeps the existing one.
+      storeCode: (data as any).storeCode ?? existing.storeCode,
       subscriptionExpiry: data.subscriptionExpiry ? new Date(data.subscriptionExpiry) : existing.subscriptionExpiry,
       lockedUntil: data.lockedUntil ? new Date(data.lockedUntil) : existing.lockedUntil,
     };
@@ -1305,6 +1358,89 @@ export const MemStorage = {
     guestOrders.set(order.id, order);
     return order;
   },
+  // Store-QR pickup order: the SAME guest-order pipeline as a table
+  // order (same table, lifecycle, KDS queue, settlement, server-side
+  // totals), entered through a store code instead of a table id.
+  // Items must belong to this store and be online-visible, quantities
+  // are validated, and totals are recomputed from server-side product
+  // prices — a client-supplied total is never trusted. An item from
+  // another store, or a hidden item, fails with MENU_ITEM_UNAVAILABLE.
+  async createPickupGuestOrder(data: {
+    idempotencyKey: string;
+    storeId: string;
+    items: Array<{ id: string; quantity: number; note?: string }>;
+    note?: string;
+  }): Promise<schema.GuestOrder> {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(data.idempotencyKey)) {
+      throw new StorageRuleError('INVALID_IDEMPOTENCY_KEY', 'A valid request id is required.');
+    }
+    if (!data.storeId || !Array.isArray(data.items) || data.items.length === 0 || data.items.length > 100) {
+      throw new StorageRuleError('INVALID_ORDER', 'A store and between 1 and 100 order items are required.');
+    }
+    const seenIds = new Set<string>();
+    for (const requested of data.items) {
+      if (!requested || typeof requested.id !== 'string' || !requested.id.trim() || seenIds.has(requested.id)) {
+        throw new StorageRuleError('INVALID_ORDER_ITEMS', 'Order items must reference unique products.');
+      }
+      seenIds.add(requested.id);
+      try {
+        quantityToUnits(requested.quantity);
+      } catch {
+        throw new StorageRuleError('INVALID_QUANTITY', 'Every order quantity must be a positive number.');
+      }
+    }
+    const store = users.get(data.storeId);
+    if (!store) throw new StorageRuleError('STORE_NOT_FOUND', 'This store does not exist.', 404);
+
+    const existing = guestOrders.get(data.idempotencyKey);
+    if (existing) {
+      const existingItems = ((existing.items as any[]) || [])
+        .map(({ id, quantity, note }: any) => ({ id, quantity, note: note || '' }))
+        .sort((a, b) => a.id.localeCompare(b.id));
+      const requestedItems = data.items
+        .map(({ id, quantity, note }: any) => ({ id, quantity, note: note || '' }))
+        .sort((a, b) => a.id.localeCompare(b.id));
+      if (
+        existing.tableId !== null ||
+        existing.storeId !== store.id ||
+        (existing.note || '') !== (data.note || '') ||
+        JSON.stringify(existingItems) !== JSON.stringify(requestedItems)
+      ) {
+        throw new StorageRuleError(
+          'IDEMPOTENCY_KEY_REUSED',
+          'This request id was already used for a different order.',
+          409,
+        );
+      }
+      return existing;
+    }
+
+    const items = data.items.map((requested) => {
+      const product = products.get(requested.id);
+      if (!product || product.storeId !== store.id || product.isOnlineVisible === false) {
+        throw new StorageRuleError('MENU_ITEM_UNAVAILABLE', 'A selected menu item is no longer available.', 409);
+      }
+      return {
+        ...product,
+        quantity: requested.quantity,
+        ...(requested.note ? { note: requested.note } : {}),
+      };
+    });
+
+    const totals = calculateSaleTotals(items, 0, 0, 0, 'cash');
+    const order: schema.GuestOrder = {
+      id: data.idempotencyKey,
+      storeId: store.id,
+      tableId: null,
+      items,
+      note: data.note || null,
+      status: 'pending',
+      totalAmount: totals.subTotal,
+      createdAt: new Date(),
+    };
+    guestOrders.set(order.id, order);
+    return order;
+  },
   async getGuestOrderById(id: string): Promise<schema.GuestOrder | null> {
     return guestOrders.get(id) || null;
   },
@@ -1717,7 +1853,7 @@ export const MemStorage = {
       totalAmount,
       totalProfit: items.reduce((acc, i) => acc + ((i.price || 0) - (i.cost || 0)) * (i.quantity || 1), 0),
       paymentMethod: input.paymentMethod === 'split' ? 'cash' : (input.paymentMethod as any),
-      customerName: `Table Guest (${order.tableId})`,
+      customerName: order.tableId ? `Table Guest (${order.tableId})` : 'Pickup Guest',
       customerPhone: null,
       paidAmount,
       cashReceived,
@@ -1977,6 +2113,59 @@ export const MemStorage = {
     };
     branches.set(branch.id, branch);
     return branch;
+  },
+  /** Wave 2 (Item 2) — guarded branch delete. A branch that still holds
+   *  stock, sales, dues, counters, open purchase orders or shifts is
+   *  NEVER deleted: the call fails with BRANCH_NOT_EMPTY naming every
+   *  blocker, so money records can never be orphaned. An empty branch
+   *  deletes cleanly; if it was the default, the oldest remaining
+   *  branch of the store is promoted to default. */
+  async deleteBranch(storeId: string, branchId: string): Promise<{ deleted: true }> {
+    await seedInMemoryStore();
+    const branch = branches.get(branchId);
+    if (!branch || branch.storeId !== storeId) {
+      throw new StorageRuleError('BRANCH_NOT_FOUND', 'Branch not found in this store.', 404);
+    }
+    const assigned = Array.from(products.values()).filter(
+      (p) => p.storeId === storeId && (p as any).branchId === branchId,
+    );
+    const stockUnits = assigned.reduce((acc, p) => acc + (p.stock || 0), 0);
+    const branchSales = Array.from(sales.values()).filter(
+      (s) => s.storeId === storeId && (s as any).branchId === branchId,
+    );
+    const dueSales = branchSales.filter((s) => (s.dueAmount || 0) > 0);
+    const dueTotal = dueSales.reduce((acc, s) => acc + (s.dueAmount || 0), 0);
+    const branchCounters = Array.from(counters.values()).filter((c) => c.branchId === branchId);
+    // Any purchase order (even received/cancelled) is branch history that
+    // must not be orphaned, so every PO for the branch blocks the delete.
+    const openPOs = Array.from(purchaseOrders.values()).filter(
+      (po) => po.storeId === storeId && (po as any).branchId === branchId,
+    );
+    const branchShifts = Array.from(shifts.values()).filter(
+      (s) => s.storeId === storeId && (s as any).branchId === branchId,
+    );
+    const blockers: string[] = [];
+    if (assigned.length > 0) blockers.push(`${assigned.length} product(s) with ${stockUnits} unit(s) of stock`);
+    if (branchSales.length > 0) blockers.push(`${branchSales.length} sale(s)`);
+    if (dueSales.length > 0) blockers.push(`${dueSales.length} unpaid due(s) totalling ৳${dueTotal.toLocaleString()}`);
+    if (branchCounters.length > 0) blockers.push(`${branchCounters.length} counter(s)`);
+    if (openPOs.length > 0) blockers.push(`${openPOs.length} purchase order(s)`);
+    if (branchShifts.length > 0) blockers.push(`${branchShifts.length} shift(s)`);
+    if (blockers.length > 0) {
+      throw new StorageRuleError(
+        'BRANCH_NOT_EMPTY',
+        `Cannot delete branch "${branch.name}": it still has ${blockers.join(', ')}. Clear or move these records first — nothing was deleted.`,
+        409,
+      );
+    }
+    branches.delete(branchId);
+    if (branch.isDefault) {
+      const remaining = Array.from(branches.values())
+        .filter((b) => b.storeId === storeId)
+        .sort((a, b) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime());
+      if (remaining[0]) branches.set(remaining[0].id, { ...remaining[0], isDefault: true });
+    }
+    return { deleted: true };
   },
   async getCountersByBranch(storeId: string, branchId: string): Promise<schema.Counter[]> {
     await seedInMemoryStore();

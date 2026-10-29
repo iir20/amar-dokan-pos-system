@@ -18,6 +18,9 @@ import {
   listenOnce,
   parseVoiceInput,
 } from '../services/voice';
+// Wave 2 (Item 3 gap) — mic-denial guidance reuses the exact Settings
+// path from services/native.ts; services/voice.ts itself is untouched.
+import { MIC_SETTINGS_GUIDANCE, classifyMicError, micFailureGuidance } from '../services/native';
 
 interface Props {
   lang: Language;
@@ -34,6 +37,7 @@ const VoicePos: React.FC<Props> = ({ lang, cart, total, change, onVoiceAdd, onVo
   const [lastSpoken, setLastSpoken] = useState('');
   const [listening, setListening] = useState(false);
   const [listenError, setListenError] = useState('');
+  const [micDenied, setMicDenied] = useState(false);
   const [typedCommand, setTypedCommand] = useState('');
 
   const supported = isSpeechSynthesisSupported();
@@ -51,6 +55,40 @@ const VoicePos: React.FC<Props> = ({ lang, cart, total, change, onVoiceAdd, onVo
       setListenError(
         lang === 'bn' ? 'বুঝতে পারিনি — আবার বলুন বা লিখুন।' : 'Could not understand — please speak again or type it.',
       );
+  };
+
+  // Wave 2 — on mic denial, show the exact Settings path inline
+  // (MIC_SETTINGS_GUIDANCE, via micFailureGuidance) with a Retry action
+  // that re-checks permission, instead of the old generic message. The
+  // typed-command form below stays visible on every voice action.
+  const handleListen = async () => {
+    setListening(true);
+    setListenError('');
+    setMicDenied(false);
+    try {
+      const cmd = await listenOnce(lang);
+      if (cmd.kind === 'add' && cmd.query) onVoiceAdd(cmd.query, cmd.quantity);
+      else if (cmd.kind === 'total') {
+        const { text } = speakTotal(total, change);
+        setLastSpoken(text);
+      } else if (cmd.kind === 'checkout') onVoiceCheckout();
+      else if (cmd.kind === 'clear') onVoiceClear();
+      else setListenError(lang === 'bn' ? 'বুঝতে পারিনি।' : 'Could not understand.');
+    } catch (e: any) {
+      if (e?.message === 'UNSUPPORTED') {
+        setListenError(t.voiceUnsupported);
+      } else if (e?.message === 'PERMISSION_DENIED' || classifyMicError(e) === 'PERMISSION_DENIED') {
+        // Exact Settings path from services/native.ts — never paraphrased.
+        setMicDenied(true);
+        setListenError(
+          lang === 'bn' ? `${t.micDeniedNote} ${MIC_SETTINGS_GUIDANCE}` : micFailureGuidance('PERMISSION_DENIED'),
+        );
+      } else {
+        setListenError(lang === 'bn' ? 'শুনতে পাইনি — লিখে দিন।' : 'Could not hear you — please type it.');
+      }
+    } finally {
+      setListening(false);
+    }
   };
 
   return (
@@ -87,30 +125,7 @@ const VoicePos: React.FC<Props> = ({ lang, cart, total, change, onVoiceAdd, onVo
           data-testid="voice-listen"
           disabled={!recognitionSupported || listening}
           className="bg-white border px-3 py-2 rounded-lg text-sm font-bold disabled:opacity-50"
-          onClick={async () => {
-            setListening(true);
-            setListenError('');
-            try {
-              const cmd = await listenOnce(lang);
-              if (cmd.kind === 'add' && cmd.query) onVoiceAdd(cmd.query, cmd.quantity);
-              else if (cmd.kind === 'total') {
-                const { text } = speakTotal(total, change);
-                setLastSpoken(text);
-              } else if (cmd.kind === 'checkout') onVoiceCheckout();
-              else if (cmd.kind === 'clear') onVoiceClear();
-              else setListenError(lang === 'bn' ? 'বুঝতে পারিনি।' : 'Could not understand.');
-            } catch (e: any) {
-              setListenError(
-                e?.message === 'UNSUPPORTED'
-                  ? t.voiceUnsupported
-                  : lang === 'bn'
-                    ? 'শুনতে পাইনি — লিখে দিন।'
-                    : 'Could not hear you — please type it.',
-              );
-            } finally {
-              setListening(false);
-            }
-          }}
+          onClick={() => void handleListen()}
         >
           🎤 {listening ? (lang === 'bn' ? 'শুনছি…' : 'Listening…') : t.voiceInput}
         </button>
@@ -141,9 +156,19 @@ const VoicePos: React.FC<Props> = ({ lang, cart, total, change, onVoiceAdd, onVo
         </button>
       </form>
       {listenError && (
-        <p role="alert" className="text-xs text-red-700">
-          {listenError}
-        </p>
+        <div role="alert" data-testid="voice-mic-guidance" className="space-y-2">
+          <p className="text-xs text-red-700">{listenError}</p>
+          {micDenied && (
+            <button
+              data-testid="voice-mic-retry"
+              onClick={() => void handleListen()}
+              disabled={listening}
+              className="bg-white border px-3 py-1.5 rounded-lg text-xs font-bold disabled:opacity-50"
+            >
+              {t.micRetry}
+            </button>
+          )}
+        </div>
       )}
       {lastSpoken && (
         <p data-testid="voice-last-spoken" className="text-sm text-gray-800 bg-white border rounded p-2">

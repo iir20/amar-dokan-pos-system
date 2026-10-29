@@ -1,14 +1,18 @@
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useApiData } from '../hooks/useApiData';
 import { StorageService } from '../services/storage';
-import { Language } from '../types';
+import { api } from '../services/api';
+import { getOutbox, subscribeToSync } from '../services/amarSync';
+import { Language, Sale } from '../types';
 import { TRANSLATIONS, APP_LOGO } from '../constants';
-import { 
-  Calendar, Printer, TrendingUp, TrendingDown, DollarSign, CreditCard, 
-  Banknote, Package, BarChart as BarChartIcon, ArrowRightLeft, Target, 
-  Percent, ShoppingBag, Clock, Flame, Award, HeartPulse, ArrowUpRight, 
-  ArrowDownRight, Zap, Coffee, Wallet, Activity, Star
+import ReceiptView from './ReceiptView';
+import { formatTakaForLang } from '../utils/currency';
+import {
+  Calendar, Printer, TrendingUp, TrendingDown, DollarSign, CreditCard,
+  Banknote, Package, BarChart as BarChartIcon, ArrowRightLeft, Target,
+  Percent, ShoppingBag, Clock, Flame, Award, HeartPulse, ArrowUpRight,
+  ArrowDownRight, Zap, Coffee, Wallet, Activity, Star, Receipt, BookOpen, Eye
 } from 'lucide-react';
 import { 
   PieChart, Pie, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis, 
@@ -19,12 +23,86 @@ interface DailyReportProps {
   lang: Language;
 }
 
+// Wave 2 (second addition) — server hisab closing summary, served by
+// GET /api/hisab?date=YYYY-MM-DD (integer paisa, server-recalculated).
+// duesCollected is null by design until a due-collection endpoint
+// exists: showing 0 would pretend collections were counted.
+interface HisabSummary {
+  date: string;
+  salesCount: number;
+  salesTotal: number;
+  cashPaid: number;
+  digitalPaid: number;
+  duesCreated: number;
+  duesOutstandingTotal: number;
+  duesCollected: number | null;
+  duesCollectedAvailable: boolean;
+  expensesTotal: number;
+  expensesCount: number;
+  cashInHand: number;
+  byMethod: Record<string, number>;
+}
+
+// New UI strings for the history + hisab tabs live here (EN + BN);
+// types.ts / constants.ts are owned by the merge coordinator.
+const DR2: Record<string, { en: string; bn: string }> = {
+  history: { en: 'Sales history', bn: 'বিক্রির হিস্ট্রি' },
+  hisab: { en: 'Daily hisab (closing)', bn: 'দিনের হিসাব (ক্লোজিং)' },
+  tapToReceipt: { en: 'Tap a sale to open its full receipt.', bn: 'যেকোনো বিক্রিতে ট্যাপ করলে পুরো রশিদ খুলবে।' },
+  noSalesDay: { en: 'No sales on this day.', bn: 'এই দিনে কোনো বিক্রি নেই।' },
+  syncPending: { en: 'Sync pending', bn: 'সিঙ্ক বাকি' },
+  viewReceipt: { en: 'View receipt', bn: 'রশিদ দেখুন' },
+  hisabNote: {
+    en: 'Cash in hand = cash received today minus expenses today. Dues collected is not counted yet: due-collection recording needs its own endpoint (see report) — it is shown as unavailable, never as 0.',
+    bn: 'হাতে নগদ = আজকের নগদ প্রাপ্তি বিয়োগ আজকের খরচ। বাকি আদায় এখনো গোনা হয় না: বাকি আদায় রেকর্ডের জন্য আলাদা এন্ডপয়েন্ট লাগবে — তাই এটিকে অনুপলব্ধ দেখানো হয়েছে, ০ নয়।',
+  },
+  hisabLoadFailed: { en: 'Could not load the hisab summary. Check connection and retry.', bn: 'হিসাব লোড করা যায়নি। সংযোগ দেখে আবার চেষ্টা করুন।' },
+  salesToday: { en: "Today's sales", bn: 'আজকের বিক্রি' },
+  cashPaid: { en: 'Cash received', bn: 'নগদ প্রাপ্তি' },
+  digitalPaid: { en: 'Digital received', bn: 'ডিজিটাল প্রাপ্তি' },
+  duesCreated: { en: 'New dues today', bn: 'আজকের নতুন বাকি' },
+  duesOutstanding: { en: 'Total dues outstanding', bn: 'মোট বাকি (সব দিন)' },
+  duesCollected: { en: 'Dues collected today', bn: 'আজকের বাকি আদায়' },
+  notAvailable: { en: 'Not available yet', bn: 'এখনো চালু হয়নি' },
+  expensesToday: { en: "Today's expenses", bn: 'আজকের খরচ' },
+  cashInHand: { en: 'Cash in hand', bn: 'হাতে নগদ' },
+  byMethod: { en: 'Received by method', bn: 'মাধ্যম অনুযায়ী প্রাপ্তি' },
+  retry: { en: 'Retry', bn: 'আবার চেষ্টা করুন' },
+};
+
 const COLORS = ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899'];
 
 const DailyReport: React.FC<DailyReportProps> = ({ lang }) => {
   const t = TRANSLATIONS[lang];
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
-  const [activeTab, setActiveTab] = useState<'financial' | 'inventory' | 'analysis'>('financial');
+  const [activeTab, setActiveTab] = useState<'financial' | 'inventory' | 'analysis' | 'history' | 'hisab'>('financial');
+  const [receiptSale, setReceiptSale] = useState<{ sale: Sale; syncPending: boolean } | null>(null);
+  const [hisab, setHisab] = useState<HisabSummary | null>(null);
+  const [hisabError, setHisabError] = useState('');
+  const [hisabLoading, setHisabLoading] = useState(false);
+  const [, setSyncTick] = useState(0);
+  const s2 = (key: keyof typeof DR2) => DR2[key][lang];
+  const tk2 = (n: number) => formatTakaForLang(n, lang);
+
+  // Outbox changes (offline sale queued / flushed) re-render history.
+  useEffect(() => subscribeToSync(() => setSyncTick((v) => v + 1)), []);
+
+  const loadHisab = async () => {
+    setHisabLoading(true);
+    setHisabError('');
+    try {
+      setHisab(await api.get(`/hisab?date=${selectedDate}`));
+    } catch {
+      setHisab(null);
+      setHisabError(s2('hisabLoadFailed'));
+    } finally {
+      setHisabLoading(false);
+    }
+  };
+  useEffect(() => {
+    if (activeTab === 'hisab') void loadHisab();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, selectedDate]);
 
   // Fetch data
   const { data: allSalesData } = useApiData(() => StorageService.getSales(), []);
@@ -129,6 +207,26 @@ const DailyReport: React.FC<DailyReportProps> = ({ lang }) => {
     };
   }, [allSales, allExpenses, inventoryLogs, selectedDate, lang]);
 
+  // History for the selected day: server sales + not-yet-synced
+  // outbox sales (server wins on id collision). An offline sale is
+  // therefore tappable to its receipt BEFORE it syncs, and after sync
+  // the same id resolves to the server record — never a dead end.
+  const historySales = useMemo(() => {
+    const byId = new Map<string, { sale: Sale; syncPending: boolean }>();
+    for (const item of getOutbox()) {
+      const s = item.sale as Sale | undefined;
+      if (s && s.date && s.date.startsWith(selectedDate)) {
+        byId.set(s.id, { sale: s, syncPending: item.status !== 'synced' });
+      }
+    }
+    for (const s of allSales) {
+      if (s.date && s.date.startsWith(selectedDate)) byId.set(s.id, { sale: s, syncPending: false });
+    }
+    return [...byId.values()].sort(
+      (a, b) => new Date(b.sale.date).getTime() - new Date(a.sale.date).getTime(),
+    );
+  }, [allSales, selectedDate]);
+
   const handlePrint = () => window.print();
 
   return (
@@ -170,10 +268,13 @@ const DailyReport: React.FC<DailyReportProps> = ({ lang }) => {
             {[
                 { id: 'financial', label: t.cashFlow, icon: Wallet },
                 { id: 'analysis', label: t.salesAnalysis, icon: BarChartIcon },
-                { id: 'inventory', label: t.inventoryLogs, icon: ArrowRightLeft }
+                { id: 'inventory', label: t.inventoryLogs, icon: ArrowRightLeft },
+                { id: 'history', label: s2('history'), icon: Receipt },
+                { id: 'hisab', label: s2('hisab'), icon: BookOpen }
             ].map(tab => (
-                <button 
+                <button
                     key={tab.id}
+                    data-testid={`reports-tab-${tab.id}`}
                     onClick={() => setActiveTab(tab.id as any)}
                     className={`pb-3 px-6 font-bold transition flex items-center gap-2 whitespace-nowrap text-sm border-b-2 ${
                         activeTab === tab.id ? 'border-emerald-600 text-emerald-600' : 'border-transparent text-gray-400 hover:text-gray-600'
@@ -436,6 +537,122 @@ const DailyReport: React.FC<DailyReportProps> = ({ lang }) => {
                 </div>
             )}
        </div>
+
+            {activeTab === 'history' && (
+                <div className="animate-fade-in bg-white rounded-3xl shadow-sm border border-gray-100 overflow-hidden">
+                    <div className="p-4 border-b bg-gray-50/50">
+                        <h3 className="font-black text-gray-800 text-sm uppercase tracking-widest">{s2('history')}</h3>
+                        <p className="text-xs text-gray-500 mt-1">{s2('tapToReceipt')}</p>
+                    </div>
+                    {historySales.length === 0 ? (
+                        <p className="p-12 text-center text-gray-400 font-bold italic">{s2('noSalesDay')}</p>
+                    ) : (
+                        <ul className="divide-y divide-gray-50">
+                            {historySales.map(({ sale, syncPending }) => (
+                                <li key={sale.id}>
+                                    <button
+                                        type="button"
+                                        data-testid={`history-sale-${sale.id}`}
+                                        onClick={() => setReceiptSale({ sale, syncPending })}
+                                        className="w-full flex items-center justify-between gap-3 p-4 hover:bg-slate-50 text-left transition"
+                                    >
+                                        <div className="min-w-0">
+                                            <div className="text-sm font-bold text-gray-800 truncate">
+                                                {sale.items.map((i) => (lang === 'bn' ? i.nameBn || i.name : i.name)).join(', ')}
+                                            </div>
+                                            <div className="text-xs text-gray-400 mt-0.5">
+                                                {new Date(sale.date).toLocaleTimeString(lang === 'bn' ? 'bn-BD' : 'en-GB', { hour: '2-digit', minute: '2-digit' })}
+                                                {sale.customerName ? ` · ${sale.customerName}` : ''}
+                                                {sale.servedBy ? ` · ${sale.servedBy}` : ''}
+                                                {' · '}ID {sale.id.slice(0, 8)}
+                                            </div>
+                                        </div>
+                                        <div className="flex items-center gap-2 shrink-0">
+                                            {sale.dueAmount > 0 && (
+                                                <span className="text-xs font-bold text-red-600 bg-red-50 px-2 py-1 rounded-full">
+                                                    {s2('duesCreated')}: {tk2(sale.dueAmount)}
+                                                </span>
+                                            )}
+                                            {syncPending && (
+                                                <span className="text-xs font-bold text-amber-700 bg-amber-50 px-2 py-1 rounded-full">{s2('syncPending')}</span>
+                                            )}
+                                            <span className="font-black text-gray-900">{tk2(sale.totalAmount)}</span>
+                                            <span className="text-emerald-600 flex items-center gap-1 text-xs font-bold">
+                                                <Eye size={14} /> {s2('viewReceipt')}
+                                            </span>
+                                        </div>
+                                    </button>
+                                </li>
+                            ))}
+                        </ul>
+                    )}
+                </div>
+            )}
+
+            {activeTab === 'hisab' && (
+                <div data-testid="hisab-summary" className="animate-fade-in space-y-6">
+                    <div className="bg-white p-6 rounded-3xl border shadow-sm">
+                        <div className="flex flex-wrap justify-between items-center gap-3">
+                            <h3 className="font-black text-gray-800">{s2('hisab')}</h3>
+                            <button
+                                data-testid="hisab-print"
+                                onClick={handlePrint}
+                                className="no-print flex items-center gap-2 bg-gray-900 text-white px-5 py-2.5 rounded-xl hover:bg-black transition shadow-md font-bold text-sm"
+                            >
+                                <Printer size={18} /> {t.printReport}
+                            </button>
+                        </div>
+                        <p className="text-xs text-gray-500 mt-2">{s2('hisabNote')}</p>
+                        {hisabLoading && <p className="mt-4 text-sm text-gray-500">…</p>}
+                        {hisabError && (
+                            <div className="mt-4 bg-red-50 border border-red-100 rounded-xl p-4 text-sm text-red-800">
+                                {hisabError}{' '}
+                                <button onClick={loadHisab} className="font-bold underline ml-1">{s2('retry')}</button>
+                            </div>
+                        )}
+                        {hisab && (
+                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-4">
+                                {[
+                                    { label: s2('salesToday'), value: `${hisab.salesCount} × ${tk2(hisab.salesTotal)}` },
+                                    { label: s2('cashPaid'), value: tk2(hisab.cashPaid) },
+                                    { label: s2('digitalPaid'), value: tk2(hisab.digitalPaid) },
+                                    { label: s2('duesCreated'), value: tk2(hisab.duesCreated) },
+                                    { label: s2('expensesToday'), value: `${hisab.expensesCount} × ${tk2(hisab.expensesTotal)}` },
+                                    { label: s2('cashInHand'), value: tk2(hisab.cashInHand) },
+                                    { label: s2('duesOutstanding'), value: tk2(hisab.duesOutstandingTotal) },
+                                    { label: s2('duesCollected'), value: hisab.duesCollectedAvailable ? tk2(hisab.duesCollected ?? 0) : s2('notAvailable') },
+                                ].map((card) => (
+                                    <div key={card.label} className="bg-slate-50 p-4 rounded-2xl border border-slate-100">
+                                        <div className="text-[10px] font-black uppercase tracking-widest text-gray-400">{card.label}</div>
+                                        <div className="text-xl font-black text-gray-900 mt-1">{card.value}</div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                        {hisab && Object.keys(hisab.byMethod).length > 0 && (
+                            <div className="mt-4">
+                                <div className="text-xs font-black uppercase tracking-widest text-gray-400 mb-2">{s2('byMethod')}</div>
+                                <div className="flex flex-wrap gap-2">
+                                    {Object.entries(hisab.byMethod).map(([method, amount]) => (
+                                        <span key={method} className="bg-emerald-50 text-emerald-800 px-3 py-1.5 rounded-full text-sm font-bold">
+                                            {method}: {tk2(amount)}
+                                        </span>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            )}
+
+       {receiptSale && (
+           <ReceiptView
+               sale={receiptSale.sale}
+               lang={lang}
+               syncPending={receiptSale.syncPending}
+               onClose={() => setReceiptSale(null)}
+           />
+       )}
 
        {/* 4. PRINT VERSION FOOTER */}
        <div className="hidden print:block mt-20 pt-10 border-t-2 border-dashed border-gray-300 text-center">

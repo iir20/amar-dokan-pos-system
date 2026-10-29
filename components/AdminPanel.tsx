@@ -7,9 +7,12 @@ import { GlobalPricingConfig, StoreCategory, GlobalConfig, Announcement, Categor
 // Phase 2 — admin system-status view (live DB state, sync queue, last backup).
 import SystemStatus from './SystemStatus';
 import { DEFAULT_GLOBAL_PRICING, APP_LOGO } from '../constants';
+// Wave 2 (second addition) — overview tab + branches tab.
+import { getSyncSummary, subscribeToSync, retryFailedOutbox, flushOutbox } from '../services/amarSync';
+import { toCents, fromCents } from '../utils/currency';
 
 const AdminPanel: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'requests' | 'users' | 'sales' | 'settings' | 'system' | 'status' | 'announcements'>('requests');
+  const [activeTab, setActiveTab] = useState<'overview' | 'requests' | 'users' | 'branches' | 'sales' | 'settings' | 'system' | 'status' | 'announcements'>('requests');
   const [processingId, setProcessingId] = useState<string | null>(null);
   
   // Realtime Data
@@ -48,6 +51,25 @@ const AdminPanel: React.FC = () => {
   // --- User Management Modal State ---
   const [userToReset, setUserToReset] = useState<User | null>(null);
   const [newPin, setNewPin] = useState('');
+
+  // --- Wave 2 (second addition): overview + branches state ---
+  // Branches/products APIs are own-store scoped (ownerOrStaff +
+  // manage_settings / view_reports): this tab manages the signed-in
+  // account's own store branches and low stock, NOT other stores'.
+  // Per-store branch administration for other stores needs a new
+  // admin endpoint — see worker report; it is not faked here.
+  const { data: branchesData, refetch: refetchBranches } = useApiData(() => StorageService.getBranches(), []);
+  const branches = branchesData || [];
+  const { data: ownProductsData } = useApiData(() => StorageService.getProducts(), []);
+  const ownProducts = ownProductsData || [];
+  const [syncState, setSyncState] = useState({ outboxCount: 0, failedCount: 0, isOnline: true, isSyncing: false });
+  const [syncMsg, setSyncMsg] = useState('');
+  const [branchName, setBranchName] = useState('');
+  const [branchAddress, setBranchAddress] = useState('');
+  const [branchMsg, setBranchMsg] = useState('');
+  const [branchError, setBranchError] = useState('');
+  const [userStatusFilter, setUserStatusFilter] = useState<'all' | 'active' | 'locked' | 'expired'>('all');
+  useEffect(() => subscribeToSync(setSyncState), []);
 
   useEffect(() => {
      if(activeTab === 'settings') {
@@ -96,6 +118,14 @@ const AdminPanel: React.FC = () => {
           );
       }
 
+      // 1b. Filter by account status (Wave 2): active = not locked,
+      // locked = isLocked, expired = subscriptionExpiry in the past.
+      if (userStatusFilter === 'locked') list = list.filter((u) => u.isLocked);
+      if (userStatusFilter === 'active') list = list.filter((u) => !u.isLocked);
+      if (userStatusFilter === 'expired') {
+          list = list.filter((u) => u.subscriptionExpiry && new Date(u.subscriptionExpiry).getTime() < Date.now());
+      }
+
       // 2. Sort
       return list.sort((a, b) => {
           if (userSortBy === 'zila') return (a.zila || '').localeCompare(b.zila || '');
@@ -104,7 +134,31 @@ const AdminPanel: React.FC = () => {
           // Default to Newest First (based on ID timestamp if available, else standard sort)
           return (b.id || '').localeCompare(a.id || '');
       });
-  }, [users, userSortBy, userSearchQuery]);
+  }, [users, userSortBy, userSearchQuery, userStatusFilter]);
+
+  // --- Wave 2 overview derivations (integer paisa for dues) ---
+  const totalDuesOutstanding = useMemo(
+      () => fromCents(sales.reduce((acc, s) => acc + toCents(s.dueAmount || 0), 0)),
+      [sales],
+  );
+  const recentSales = useMemo(
+      () => [...sales].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()).slice(0, 8),
+      [sales],
+  );
+  const lowStockOwn = useMemo(
+      () => [...ownProducts].filter((p) => p.stock <= 5).sort((a, b) => a.stock - b.stock).slice(0, 10),
+      [ownProducts],
+  );
+  const expiringSoon = useMemo(
+      () =>
+          users.filter((u) => {
+              if (!u.subscriptionExpiry) return false;
+              const ms = new Date(u.subscriptionExpiry).getTime() - Date.now();
+              return ms >= 0 && ms <= 14 * 86400000;
+          }),
+      [users],
+  );
+  const syncSummary = getSyncSummary();
 
   const salesAnalytics = useMemo(() => {
       const storeCategoryMap = new Map<string, string>();
@@ -209,6 +263,56 @@ const AdminPanel: React.FC = () => {
           setUserToReset(null);
       } catch (e) {
           alert("Failed to update user.");
+      }
+  };
+
+  // --- Wave 2 handlers: sync retry + own-store branches ---
+  // Every call below keeps its existing server permission check:
+  // sync queue is local-device state; branch writes are ownerOrStaff +
+  // requirePermission('manage_settings') on the server. Nothing here
+  // widens access, and branch-delete refusals (BRANCH_NOT_EMPTY) are
+  // shown verbatim instead of being worked around.
+  const handleRetrySync = async () => {
+      setSyncMsg('Retrying queued sales…');
+      retryFailedOutbox();
+      try {
+          const r = await flushOutbox();
+          setSyncMsg(
+              r.failed > 0
+                  ? `Synced ${r.synced}, ${r.failed} still failed — they stay queued. Tap Retry again when back online.`
+                  : `Synced ${r.synced}. Queue is clear.`,
+          );
+      } catch (e: any) {
+          setSyncMsg(`Retry failed: ${e?.message || 'unknown error'} — nothing was discarded.`);
+      }
+  };
+
+  const handleAddBranch = async (e: React.FormEvent) => {
+      e.preventDefault();
+      setBranchError('');
+      setBranchMsg('');
+      if (!branchName.trim()) return;
+      try {
+          await StorageService.createBranch({ name: branchName.trim(), address: branchAddress.trim() || undefined });
+          setBranchName('');
+          setBranchAddress('');
+          setBranchMsg('Branch added.');
+          refetchBranches();
+      } catch (err: any) {
+          setBranchError(err?.message || 'Failed to add branch');
+      }
+  };
+
+  const handleDeleteBranch = async (id: string) => {
+      if (!window.confirm('Delete this branch? A branch with stock, sales, dues, counters, orders or shifts cannot be deleted.')) return;
+      setBranchError('');
+      setBranchMsg('');
+      try {
+          await StorageService.deleteBranch(id);
+          setBranchMsg('Branch deleted.');
+          refetchBranches();
+      } catch (err: any) {
+          setBranchError(err?.message || 'Failed to delete branch');
       }
   };
 
@@ -372,8 +476,10 @@ const AdminPanel: React.FC = () => {
 
       {/* Navigation Tabs */}
       <div className="flex gap-4 mb-6 border-b border-slate-200 overflow-x-auto no-scrollbar pb-1">
+          <button data-testid="admin-tab-overview" onClick={() => setActiveTab('overview')} className={`pb-2 px-4 font-medium transition whitespace-nowrap ${activeTab === 'overview' ? 'border-b-2 border-slate-800 text-slate-800' : 'text-slate-500'}`}>সারসংক্ষেপ / Overview</button>
           <button onClick={() => setActiveTab('requests')} className={`pb-2 px-4 font-medium transition whitespace-nowrap ${activeTab === 'requests' ? 'border-b-2 border-slate-800 text-slate-800' : 'text-slate-500'}`}>Subscription Requests</button>
           <button onClick={() => setActiveTab('users')} className={`pb-2 px-4 font-medium transition whitespace-nowrap ${activeTab === 'users' ? 'border-b-2 border-slate-800 text-slate-800' : 'text-slate-500'}`}>Registered Users</button>
+          <button data-testid="admin-tab-branches" onClick={() => setActiveTab('branches')} className={`pb-2 px-4 font-medium transition whitespace-nowrap ${activeTab === 'branches' ? 'border-b-2 border-slate-800 text-slate-800' : 'text-slate-500'}`}>শাখা / Branches</button>
           <button onClick={() => setActiveTab('sales')} className={`pb-2 px-4 font-medium transition whitespace-nowrap ${activeTab === 'sales' ? 'border-b-2 border-slate-800 text-slate-800' : 'text-slate-500'}`}>Sales Analysis</button>
           <button onClick={() => setActiveTab('settings')} className={`pb-2 px-4 font-medium transition whitespace-nowrap flex items-center gap-2 ${activeTab === 'settings' ? 'border-b-2 border-slate-800 text-slate-800' : 'text-slate-500'}`}><SettingsIcon size={16} /> Pricing</button>
           <button onClick={() => setActiveTab('system')} className={`pb-2 px-4 font-medium transition whitespace-nowrap flex items-center gap-2 ${activeTab === 'system' ? 'border-b-2 border-slate-800 text-slate-800' : 'text-slate-500'}`}><Store size={16} /> Branding</button>
@@ -383,6 +489,104 @@ const AdminPanel: React.FC = () => {
 
       {/* Tab Content */}
       <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden min-h-[400px]">
+          {activeTab === 'overview' && (
+              <div data-testid="admin-overview" className="p-6 grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  <div className="space-y-6">
+                      <div className="bg-red-50 border border-red-100 rounded-xl p-4">
+                          <h3 className="font-bold text-red-800">মোট বাকি / Total dues outstanding (all stores)</h3>
+                          <p className="text-3xl font-black text-red-700 mt-1">৳{totalDuesOutstanding.toLocaleString()}</p>
+                          <p className="text-xs text-red-500 mt-1">Sum of dueAmount over all admin-visible sales, integer paisa.</p>
+                      </div>
+                      <div className="border rounded-xl p-4">
+                          <h3 className="font-bold text-gray-800 mb-3">সাম্প্রতিক বিক্রি / Recent sales</h3>
+                          {recentSales.length === 0 && <p className="text-sm text-gray-400">No sales yet.</p>}
+                          <ul className="divide-y divide-gray-100">
+                              {recentSales.map((s) => (
+                                  <li key={s.id} className="py-2 flex justify-between gap-3 text-sm">
+                                      <span className="text-gray-700 truncate">{s.storeName || 'Unknown store'} · {new Date(s.date).toLocaleDateString()} · {s.id.slice(0, 8)}</span>
+                                      <span className="font-bold shrink-0">৳{s.totalAmount.toFixed(2)}{s.dueAmount > 0 ? <span className="text-red-600"> (due ৳{s.dueAmount.toFixed(2)})</span> : ''}</span>
+                                  </li>
+                              ))}
+                          </ul>
+                      </div>
+                      <div className="border rounded-xl p-4">
+                          <h3 className="font-bold text-gray-800 mb-3">সাবস্ক্রিপশন শেষ হতে চলেছে / Expiring within 14 days</h3>
+                          {expiringSoon.length === 0 && <p className="text-sm text-gray-400">None.</p>}
+                          <ul className="divide-y divide-gray-100">
+                              {expiringSoon.map((u) => (
+                                  <li key={u.id} className="py-2 flex justify-between gap-3 text-sm">
+                                      <span className="text-gray-700">{u.storeName} ({u.username})</span>
+                                      <span className="font-bold text-amber-700 shrink-0">{u.subscriptionExpiry ? new Date(u.subscriptionExpiry).toLocaleDateString() : ''}</span>
+                                  </li>
+                              ))}
+                          </ul>
+                      </div>
+                  </div>
+                  <div className="space-y-6">
+                      <div className="border rounded-xl p-4">
+                          <h3 className="font-bold text-gray-800 mb-1">কম স্টক / Low stock — this account&apos;s own store (≤ 5)</h3>
+                          <p className="text-xs text-gray-400 mb-3">Products API is own-store scoped; cross-store low stock needs a new admin endpoint and is not guessed here.</p>
+                          {lowStockOwn.length === 0 && <p className="text-sm text-gray-400">No low-stock products.</p>}
+                          <ul className="divide-y divide-gray-100">
+                              {lowStockOwn.map((p) => (
+                                  <li key={p.id} className="py-2 flex justify-between gap-3 text-sm">
+                                      <span className="text-gray-700">{p.name}</span>
+                                      <span className="font-bold text-red-600 shrink-0">{p.stock} {p.unit || 'pcs'}</span>
+                                  </li>
+                              ))}
+                          </ul>
+                      </div>
+                      <div className="border rounded-xl p-4">
+                          <h3 className="font-bold text-gray-800 mb-3">সিঙ্ক কিউ / Sync queue (this device)</h3>
+                          <div className="text-sm text-gray-700 space-y-1">
+                              <p>Status: {syncState.isOnline ? 'Online' : 'Offline'}{syncState.isSyncing ? ' · Syncing…' : ''}</p>
+                              <p>Pending: <strong>{syncState.outboxCount}</strong> · Failed: <strong className="text-red-600">{syncState.failedCount}</strong></p>
+                              {syncSummary.oldestQueuedAt && <p>Oldest queued: {new Date(syncSummary.oldestQueuedAt).toLocaleString()}</p>}
+                              {syncSummary.lastError && <p className="text-red-600 break-words">Last error: {syncSummary.lastError}</p>}
+                          </div>
+                          <button
+                              data-testid="admin-sync-retry"
+                              onClick={handleRetrySync}
+                              disabled={syncSummary.totalQueued === 0}
+                              className="mt-3 bg-emerald-600 text-white px-4 py-2 rounded-lg font-bold text-sm hover:bg-emerald-700 disabled:opacity-50"
+                          >
+                              Retry queued sales
+                          </button>
+                          {syncMsg && <p data-testid="admin-sync-msg" className="mt-2 text-sm text-gray-700">{syncMsg}</p>}
+                          <p className="text-xs text-gray-400 mt-2">Failed sales are never discarded: they stay queued until a retry succeeds or the server confirms the id (SALE_ID_CONFLICT counts as synced).</p>
+                      </div>
+                  </div>
+              </div>
+          )}
+
+          {activeTab === 'branches' && (
+              <div data-testid="admin-branches" className="p-6 max-w-2xl">
+                  <h3 className="font-bold text-gray-800 text-lg">শাখা ব্যবস্থাপনা / Branch management — this account&apos;s own store</h3>
+                  <p className="text-sm text-gray-500 mt-1 mb-4">Branches are added and removed here with the same server guards as Profile → Branches (manage_settings). A branch holding stock, sales, dues, counters, orders or shifts is refused with the blockers named — nothing is deleted.</p>
+                  {branchMsg && <p className="bg-emerald-50 text-emerald-800 border border-emerald-100 rounded-lg px-3 py-2 text-sm mb-3">{branchMsg}</p>}
+                  {branchError && <p className="bg-red-50 text-red-800 border border-red-100 rounded-lg px-3 py-2 text-sm mb-3 break-words">{branchError}</p>}
+                  <form onSubmit={handleAddBranch} className="flex flex-col md:flex-row gap-2 mb-6">
+                      <input value={branchName} onChange={(e) => setBranchName(e.target.value)} placeholder="Branch name / শাখার নাম" className="flex-1 p-2 border rounded-lg text-sm" />
+                      <input value={branchAddress} onChange={(e) => setBranchAddress(e.target.value)} placeholder="Address (optional)" className="flex-1 p-2 border rounded-lg text-sm" />
+                      <button type="submit" className="bg-emerald-600 text-white px-4 py-2 rounded-lg font-bold text-sm hover:bg-emerald-700">Add branch</button>
+                  </form>
+                  {branches.length === 0 && <p className="text-sm text-gray-400">No branches yet.</p>}
+                  <ul className="divide-y divide-gray-100">
+                      {branches.map((b) => (
+                          <li key={b.id} className="py-3 flex justify-between items-center gap-3">
+                              <div>
+                                  <div className="font-bold text-gray-800">{b.name} {b.isDefault && <span className="text-xs bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full ml-1">Default</span>}</div>
+                                  {b.address && <div className="text-xs text-gray-500">{b.address}</div>}
+                              </div>
+                              <button onClick={() => handleDeleteBranch(b.id)} className="text-red-500 hover:text-red-700 hover:bg-red-50 p-2 rounded text-sm font-bold flex items-center gap-1">
+                                  <Trash2 size={16} /> Delete
+                              </button>
+                          </li>
+                      ))}
+                  </ul>
+              </div>
+          )}
+
           {activeTab === 'requests' && (
               <div className="flex flex-col">
                   {/* Request Filter */}
@@ -470,7 +674,7 @@ const AdminPanel: React.FC = () => {
                        
                        <div className="flex items-center gap-2 self-end md:self-auto">
                            <span className="text-xs font-bold text-gray-500 uppercase flex items-center gap-1"><ArrowUpDown size={14} /> Sort By:</span>
-                           <select 
+                           <select
                                className="p-1.5 border rounded-lg text-sm bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500"
                                value={userSortBy}
                                onChange={(e) => setUserSortBy(e.target.value as any)}
@@ -479,6 +683,18 @@ const AdminPanel: React.FC = () => {
                                <option value="zila">Zila (District)</option>
                                <option value="upozila">Upozila</option>
                                <option value="thana">Thana</option>
+                           </select>
+                           <span className="text-xs font-bold text-gray-500 uppercase ml-2">Status:</span>
+                           <select
+                               data-testid="admin-user-status-filter"
+                               className="p-1.5 border rounded-lg text-sm bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                               value={userStatusFilter}
+                               onChange={(e) => setUserStatusFilter(e.target.value as any)}
+                           >
+                               <option value="all">All accounts</option>
+                               <option value="active">Active (not locked)</option>
+                               <option value="locked">Locked</option>
+                               <option value="expired">Subscription expired</option>
                            </select>
                        </div>
                    </div>
@@ -491,6 +707,7 @@ const AdminPanel: React.FC = () => {
                                     <th className="p-4">Location</th>
                                     <th className="p-4">Category</th>
                                     <th className="p-4">Plan</th>
+                                    <th className="p-4">Role / Subscription</th>
                                     <th className="p-4">Status</th>
                                     <th className="p-4 text-center">Actions</th>
                                 </tr>
@@ -519,6 +736,15 @@ const AdminPanel: React.FC = () => {
                                             <span className={`px-2 py-1 rounded-full text-xs font-bold ${u.plan === 'premium' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600'}`}>{u.plan.toUpperCase()}</span>
                                             <div className="text-[10px] text-gray-400 mt-1">
                                                 {u.subscriptionExpiry ? new Date(u.subscriptionExpiry).toLocaleDateString() : 'N/A'}
+                                            </div>
+                                        </td>
+                                        <td className="p-4">
+                                            <div className="text-sm font-bold text-gray-700">{u.isPlatformAdmin ? 'Platform admin' : 'Store owner'}</div>
+                                            <div className="text-[10px] text-gray-400 mt-0.5">
+                                                Subscription: {u.subscriptionStatus || (u.subscriptionExpiry && new Date(u.subscriptionExpiry).getTime() < Date.now() ? 'expired' : 'active')}
+                                            </div>
+                                            <div className="text-[10px] text-gray-400">
+                                                {u.isLocked ? 'Account locked — PIN reset unlocks it' : 'Account active'}
                                             </div>
                                         </td>
                                         <td className="p-4">

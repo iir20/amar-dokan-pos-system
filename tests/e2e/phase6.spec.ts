@@ -96,7 +96,7 @@ test('phase6 inventory voice: typed stock command updates stock, bulk adjust + p
   await page.getByTestId(`inventory-select-${bulk.id}`).check();
   await page.getByTestId('inventory-bulk-delta').fill('5');
   await page.getByTestId('inventory-bulk-adjust').click();
-  await expect(page.getByTestId('inventory-bulk-message')).toContainText('1 updated');
+  await expect(page.getByTestId('inventory-bulk-message')).toContainText('1টি আপডেট');
   await expect
     .poll(async () => {
       const products = await expectOk(page.request, 'GET', '/api/products');
@@ -108,7 +108,7 @@ test('phase6 inventory voice: typed stock command updates stock, bulk adjust + p
   await page.getByTestId(`inventory-select-${bulk.id}`).check();
   await page.getByTestId('inventory-bulk-price').fill('250');
   await page.getByTestId('inventory-bulk-price-btn').click();
-  await expect(page.getByTestId('inventory-bulk-message')).toContainText('1 updated');
+  await expect(page.getByTestId('inventory-bulk-message')).toContainText('1টি আপডেট');
   page.on('dialog', (dialog) => dialog.accept());
   await page.getByTestId(`inventory-select-${bulk.id}`).check();
   await page.getByTestId('inventory-bulk-delete').click();

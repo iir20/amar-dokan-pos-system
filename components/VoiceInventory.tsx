@@ -11,8 +11,12 @@
 // back via `lastResult`.
 import React, { useState } from 'react';
 import { Language, Product } from '../types';
+import { TRANSLATIONS } from '../constants';
 import { isSpeechSynthesisSupported, isSpeechRecognitionSupported, speakBangla, listenOnce } from '../services/voice';
 import { parseInventoryVoiceCommand, inventoryConfirmText } from '../shared/phase6';
+// Wave 2 (Item 3 gap) — mic-denial guidance reuses the exact Settings
+// path from services/native.ts; services/voice.ts itself is untouched.
+import { MIC_SETTINGS_GUIDANCE, classifyMicError, micFailureGuidance } from '../services/native';
 
 interface Props {
   lang: Language;
@@ -23,9 +27,11 @@ interface Props {
 }
 
 const VoiceInventory: React.FC<Props> = ({ lang, products, onSearch, onRequestAdd, onSetStock }) => {
+  const t = TRANSLATIONS[lang];
   const [typedCommand, setTypedCommand] = useState('');
   const [listening, setListening] = useState(false);
   const [listenError, setListenError] = useState('');
+  const [micDenied, setMicDenied] = useState(false);
   const [lastSpoken, setLastSpoken] = useState('');
 
   const supported = isSpeechSynthesisSupported();
@@ -71,6 +77,38 @@ const VoiceInventory: React.FC<Props> = ({ lang, products, onSearch, onRequestAd
     );
   };
 
+  // Wave 2 — on mic denial, show the exact Settings path inline
+  // (MIC_SETTINGS_GUIDANCE, via micFailureGuidance) with a Retry action
+  // that re-checks permission, instead of the old generic message. The
+  // typed-command form below stays visible on every voice action.
+  const handleListen = async () => {
+    setListening(true);
+    setListenError('');
+    setMicDenied(false);
+    try {
+      const cmd = await listenOnce(lang);
+      // Reuse the same text pipeline: rebuild a command string from the
+      // parsed result so voice and typed input behave identically.
+      if (cmd.kind === 'add' && cmd.query) await applyCommandText(`${cmd.query} যোগ কর`);
+      else if (cmd.kind === 'total')
+        setListenError(lang === 'bn' ? 'ইনভেন্টরিতে মোট দেখা যায় না।' : 'Totals are not an inventory command.');
+      else if (cmd.query) await applyCommandText(cmd.query);
+      else setListenError(lang === 'bn' ? 'বুঝতে পারিনি।' : 'Could not understand.');
+    } catch (e: any) {
+      if (e?.message === 'PERMISSION_DENIED' || classifyMicError(e) === 'PERMISSION_DENIED') {
+        // Exact Settings path from services/native.ts — never paraphrased.
+        setMicDenied(true);
+        setListenError(
+          lang === 'bn' ? `${t.micDeniedNote} ${MIC_SETTINGS_GUIDANCE}` : micFailureGuidance('PERMISSION_DENIED'),
+        );
+      } else {
+        setListenError(lang === 'bn' ? 'শুনতে পাইনি — লিখে দিন।' : 'Could not hear you — please type it.');
+      }
+    } finally {
+      setListening(false);
+    }
+  };
+
   return (
     <div data-testid="voice-inventory" className="border rounded-lg bg-amber-50 p-3 space-y-2">
       <p className="text-sm font-bold text-gray-800">
@@ -88,27 +126,7 @@ const VoiceInventory: React.FC<Props> = ({ lang, products, onSearch, onRequestAd
           data-testid="voice-inventory-listen"
           disabled={!recognitionSupported || listening}
           className="bg-white border px-3 py-2 rounded-lg text-sm font-bold disabled:opacity-50"
-          onClick={async () => {
-            setListening(true);
-            setListenError('');
-            try {
-              const cmd = await listenOnce(lang);
-              // Reuse the same text pipeline: rebuild a command string
-              // from the parsed result so voice and typed input behave
-              // identically.
-              if (cmd.kind === 'add' && cmd.query) await applyCommandText(`${cmd.query} যোগ কর`);
-              else if (cmd.kind === 'total')
-                setListenError(
-                  lang === 'bn' ? 'ইনভেন্টরিতে মোট দেখা যায় না।' : 'Totals are not an inventory command.',
-                );
-              else if (cmd.query) await applyCommandText(cmd.query);
-              else setListenError(lang === 'bn' ? 'বুঝতে পারিনি।' : 'Could not understand.');
-            } catch {
-              setListenError(lang === 'bn' ? 'শুনতে পাইনি — লিখে দিন।' : 'Could not hear you — please type it.');
-            } finally {
-              setListening(false);
-            }
-          }}
+          onClick={() => void handleListen()}
         >
           🎤 {listening ? (lang === 'bn' ? 'শুনছি…' : 'Listening…') : lang === 'bn' ? 'বলে খুঁজুন' : 'Speak a command'}
         </button>
@@ -143,9 +161,19 @@ const VoiceInventory: React.FC<Props> = ({ lang, products, onSearch, onRequestAd
         </button>
       </form>
       {listenError && (
-        <p role="alert" className="text-xs text-red-700">
-          {listenError}
-        </p>
+        <div role="alert" data-testid="voice-inventory-mic-guidance" className="space-y-2">
+          <p className="text-xs text-red-700">{listenError}</p>
+          {micDenied && (
+            <button
+              data-testid="voice-inventory-mic-retry"
+              onClick={() => void handleListen()}
+              disabled={listening}
+              className="bg-white border px-3 py-1.5 rounded-lg text-xs font-bold disabled:opacity-50"
+            >
+              {t.micRetry}
+            </button>
+          )}
+        </div>
       )}
       {lastSpoken && (
         <p data-testid="voice-inventory-last-spoken" className="text-sm text-gray-800 bg-white border rounded p-2">

@@ -23,7 +23,7 @@ import VoicePos from './VoicePos';
 import CheckoutSheet from './CheckoutSheet';
 import { calculateSaleTotals, parseMoneyInput } from '../shared/finance';
 import { cacheProducts, getCachedProducts, enqueueOfflineSale } from '../services/amarSync';
-import { speakBangla } from '../services/voice';
+import { speakBangla, speakTotal as speakTotalService, isVoiceAnnouncementOn } from '../services/voice';
 import { toBanglaDigits } from '../shared/phase3';
 import { getTheme, setTheme, getFontScale, setFontScale, nextFontScale } from '../services/theme';
 import type { ThemeName } from '../design/tokens';
@@ -356,14 +356,28 @@ const POS: React.FC<POSProps> = ({ lang, onCheckout }) => {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [cart, isSubmitting, calculation, showCheckoutSheet]);
 
-  // Voice announcement of total (Bangla)
+  // DISTINCTIVE FEATURES (2026-10-29) — speaker mode: the cart total
+  // + change are spoken aloud in Bangla through the gated voice
+  // service (services/voice.ts consults amar-voice-confirm; when the
+  // toggle is off this is a silent no-op and the total stays visible
+  // as text). Previously this function bypassed the toggle entirely
+  // with a direct speechSynthesis call. Change comes from the
+  // checkout calculation when cash is tendered, else 0.
   const speakTotal = () => {
-    if ('speechSynthesis' in window && totalAmount > 0) {
+    if (totalAmount <= 0 || !isVoiceAnnouncementOn()) return;
+    const change = calculation?.changeAmount || 0;
+    if (lang === 'bn') {
+      speakTotalService(totalAmount, change);
+      return;
+    }
+    // English UI: same toggle gate, English utterance (the Bangla
+    // service phrase is Bangla-only, so en uses its own utterance).
+    if ('speechSynthesis' in window) {
       window.speechSynthesis.cancel();
-      const text =
-        lang === 'bn' ? `মোট টাকা ${Math.round(totalAmount)} টাকা` : `Total amount ${Math.round(totalAmount)} Taka`;
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.lang = lang === 'bn' ? 'bn-BD' : 'en-US';
+      const utterance = new SpeechSynthesisUtterance(
+        `Total amount ${Math.round(totalAmount)} Taka${change > 0 ? `, change ${Math.round(change)} Taka` : ''}`,
+      );
+      utterance.lang = 'en-US';
       window.speechSynthesis.speak(utterance);
     }
   };
@@ -615,6 +629,15 @@ const POS: React.FC<POSProps> = ({ lang, onCheckout }) => {
               </span>
             </button>
             <button
+              data-testid="pos-speak-total"
+              onClick={speakTotal}
+              aria-label={t.speakTotalLabel}
+              title={isVoiceAnnouncementOn() ? t.speakTotalLabel : t.speakerOffNote}
+              className="ad-tap px-3 rounded-xl bg-white border border-emerald-200 text-emerald-700 font-bold shadow"
+            >
+              🔊
+            </button>
+            <button
               data-testid="pos-checkout-bar"
               onClick={openCheckoutSheet}
               aria-label={lang === 'bn' ? 'চেকআউট করুন' : 'Checkout'}
@@ -836,6 +859,17 @@ const POS: React.FC<POSProps> = ({ lang, onCheckout }) => {
               <span>{t.total}</span>
               <span>৳{totalAmount.toFixed(2)}</span>
             </div>
+            <button
+              data-testid="pos-speak-total-desktop"
+              onClick={speakTotal}
+              title={isVoiceAnnouncementOn() ? t.speakTotalLabel : t.speakerOffNote}
+              className="w-full mt-2 py-2 rounded-lg bg-white border border-emerald-200 text-emerald-700 font-medium text-sm"
+            >
+              🔊 {t.speakTotalLabel}
+              {!isVoiceAnnouncementOn() && (
+                <span className="block text-[11px] font-normal text-gray-500">{t.speakerOffNote}</span>
+              )}
+            </button>
           </div>
 
           {/* Payment Method Selector */}

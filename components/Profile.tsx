@@ -25,6 +25,8 @@ import {
   Camera,
 } from 'lucide-react';
 import SubscriptionModal from './SubscriptionModal';
+import BranchManager from './BranchManager';
+import StoreQr from './StoreQr';
 
 interface ProfileProps {
   lang: Language;
@@ -416,6 +418,12 @@ const Profile: React.FC<ProfileProps> = ({ lang, isOwner }) => {
             </div>
           )}
         </div>
+
+        {/* --- BRANCH MANAGEMENT (Wave 2, Item 2) --- */}
+        <BranchManager lang={lang} />
+
+        {/* --- PER-STORE SMART QR (owner only) --- */}
+        {isOwner && <StoreQr lang={lang} />}
 
         {/* --- EDIT PROFILE FORM --- */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-8">

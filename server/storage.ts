@@ -1,6 +1,6 @@
 import { db, pool, getDbStatus, markDbDisconnected } from './db';
 import * as schema from '../shared/schema';
-import { eq, desc, gte, and, or, ilike, sql } from 'drizzle-orm';
+import { eq, desc, gte, and, or, ilike, sql, isNull } from 'drizzle-orm';
 import crypto from 'node:crypto';
 import { calculateSaleTotals, moneyToMinor, PaymentMethod, quantityToUnits } from '../shared/finance';
 import {
@@ -13,6 +13,7 @@ import {
   type Coupon as Phase3Coupon,
 } from '../shared/phase3';
 import { MemStorage } from './memStorage';
+import { publicProductList, publicStoreView } from './publicView';
 import { broadcastToStore } from './live';
 
 export const genId = () => crypto.randomUUID();
@@ -156,6 +157,222 @@ export function getDatabaseStatus() {
   return getDbStatus();
 }
 
+// ------------------------------------------------------------------
+// Dashboard totals (ITEM 1 fix, 2026-10-29).
+//
+// BEFORE: the dashboard's overall sell total came only from the `sales`
+// table (in-store POS sales). `components/Dashboard.tsx` sums
+// GET /api/sales into `stats.totalSales` and keeps marketplace orders
+// in a separate `onlineStats` block, so a completed online order never
+// reached the headline total even though the Online section showed it.
+// No server endpoint aggregated the two record sets at all.
+//
+// AFTER: `computeDashboardTotals` is the single server-side aggregation
+// for the dashboard headline. It sums POS sales plus COMPLETED
+// marketplace orders (status 'delivered' — a COD order is only money
+// realised once delivered; placed/confirmed/out_for_delivery orders are
+// reported separately as pending and never inflate the total, and
+// cancelled orders never count). All money is summed in integer paisa
+// via `moneyToMinor` + BigInt and only converted back to taka at the
+// end, so the server — never client-supplied totals — decides the
+// figure, with the same paisa rules as POS sales
+// (`shared/finance.ts`). Online orders live in `online_orders` and POS
+// sales in `sales`; the two sets are disjoint by construction (an
+// online order never creates a `sales` row), but if the same id ever
+// appeared in both lists it is counted exactly once (the POS sale
+// wins, the duplicate online record is reported in
+// `duplicateOnlineIdsSkipped`) rather than double-counted.
+// Online orders carry no cost data, so no online profit figure is
+// invented here: this aggregation covers sell totals only.
+// ------------------------------------------------------------------
+export const COMPLETED_ONLINE_ORDER_STATUS = 'delivered' as const;
+
+export interface DashboardSaleInput {
+  id: string;
+  totalAmount: number;
+  dueAmount?: number | null;
+}
+
+export interface DashboardOnlineOrderInput {
+  id: string;
+  totalAmount: number;
+  status: string;
+}
+
+export interface DashboardTotals {
+  /** Headline dashboard figure: POS sales + delivered online orders. */
+  totalSales: number;
+  posTotalSales: number;
+  onlineCompletedTotalSales: number;
+  /** Delivered online total not yet realised (placed/confirmed/out_for_delivery). */
+  onlinePendingTotalSales: number;
+  posCount: number;
+  onlineCompletedCount: number;
+  onlinePendingCount: number;
+  onlineCancelledCount: number;
+  totalCount: number;
+  /** POS due only: a delivered COD order is paid on delivery, so it adds no due. */
+  totalDue: number;
+  duplicateOnlineIdsSkipped: number;
+}
+
+function minorToTaka(minor: bigint): number {
+  return Number(minor) / 100;
+}
+
+export function computeDashboardTotals(
+  sales: readonly DashboardSaleInput[],
+  onlineOrders: readonly DashboardOnlineOrderInput[],
+): DashboardTotals {
+  let posMinor = 0n;
+  let dueMinor = 0n;
+  const saleIds = new Set<string>();
+  for (const sale of sales) {
+    saleIds.add(sale.id);
+    posMinor += BigInt(moneyToMinor(sale.totalAmount, 'total_amount'));
+    if (sale.dueAmount != null) dueMinor += BigInt(moneyToMinor(sale.dueAmount, 'due_amount'));
+  }
+
+  let onlineCompletedMinor = 0n;
+  let onlinePendingMinor = 0n;
+  let onlineCompletedCount = 0;
+  let onlinePendingCount = 0;
+  let onlineCancelledCount = 0;
+  let duplicateOnlineIdsSkipped = 0;
+  for (const order of onlineOrders) {
+    if (saleIds.has(order.id)) {
+      duplicateOnlineIdsSkipped += 1;
+      continue;
+    }
+    if (order.status === COMPLETED_ONLINE_ORDER_STATUS) {
+      onlineCompletedMinor += BigInt(moneyToMinor(order.totalAmount, 'total_amount'));
+      onlineCompletedCount += 1;
+    } else if (order.status === 'cancelled') {
+      onlineCancelledCount += 1;
+    } else {
+      onlinePendingMinor += BigInt(moneyToMinor(order.totalAmount, 'total_amount'));
+      onlinePendingCount += 1;
+    }
+  }
+
+  return {
+    totalSales: minorToTaka(posMinor + onlineCompletedMinor),
+    posTotalSales: minorToTaka(posMinor),
+    onlineCompletedTotalSales: minorToTaka(onlineCompletedMinor),
+    onlinePendingTotalSales: minorToTaka(onlinePendingMinor),
+    posCount: sales.length,
+    onlineCompletedCount,
+    onlinePendingCount,
+    onlineCancelledCount,
+    totalCount: sales.length + onlineCompletedCount,
+    totalDue: minorToTaka(dueMinor),
+    duplicateOnlineIdsSkipped,
+  };
+}
+
+// ------------------------------------------------------------------
+// Daily hisab (Wave 2, second addition) — the owner's day-closing
+// summary, server-recalculated in integer paisa via moneyToMinor +
+// BigInt, converted to taka only at the return boundary.
+// Day convention: the UTC calendar day of the stored ISO timestamp,
+// the same convention DailyReport already uses (date.startsWith).
+// A Dhaka-local day bucket is a known follow-up (see worker report);
+// it is NOT silently substituted here.
+// duesCollected is null + duesCollectedAvailable false ON PURPOSE:
+// no endpoint records a due collection yet, so any number here would
+// be invented. It becomes real when /dues/collect lands.
+export interface HisabSaleInput {
+  date: string | Date;
+  totalAmount: number;
+  paidAmount: number;
+  paymentMethod?: string | null;
+  dueAmount?: number | null;
+}
+
+export interface HisabExpenseInput {
+  date: string | Date;
+  amount: number;
+}
+
+export interface HisabSummary {
+  date: string;
+  salesCount: number;
+  salesTotal: number;
+  cashPaid: number;
+  digitalPaid: number;
+  duesCreated: number;
+  duesOutstandingTotal: number;
+  duesCollected: number | null;
+  duesCollectedAvailable: boolean;
+  expensesTotal: number;
+  expensesCount: number;
+  cashInHand: number;
+  byMethod: Record<string, number>;
+}
+
+const hisabDay = (d: string | Date): string | null => {
+  const t = new Date(d).getTime();
+  if (!Number.isFinite(t)) return null;
+  return new Date(t).toISOString().slice(0, 10);
+};
+
+export function computeHisab(
+  sales: readonly HisabSaleInput[],
+  expenses: readonly HisabExpenseInput[],
+  date: string,
+): HisabSummary {
+  let salesMinor = 0n;
+  let cashMinor = 0n;
+  let digitalMinor = 0n;
+  let duesCreatedMinor = 0n;
+  let duesOutstandingMinor = 0n;
+  let salesCount = 0;
+  const byMethodMinor: Record<string, bigint> = {};
+
+  for (const sale of sales) {
+    if (sale.dueAmount != null) duesOutstandingMinor += BigInt(moneyToMinor(sale.dueAmount, 'due_amount'));
+    if (hisabDay(sale.date) !== date) continue;
+    salesCount += 1;
+    salesMinor += BigInt(moneyToMinor(sale.totalAmount, 'total_amount'));
+    const paidMinor = BigInt(moneyToMinor(sale.paidAmount, 'paid_amount'));
+    const method = sale.paymentMethod || 'cash';
+    byMethodMinor[method] = (byMethodMinor[method] ?? 0n) + paidMinor;
+    if (method === 'cash') cashMinor += paidMinor;
+    else digitalMinor += paidMinor;
+    if (sale.dueAmount != null) duesCreatedMinor += BigInt(moneyToMinor(sale.dueAmount, 'due_amount'));
+  }
+
+  let expensesMinor = 0n;
+  let expensesCount = 0;
+  for (const expense of expenses) {
+    if (hisabDay(expense.date) !== date) continue;
+    expensesCount += 1;
+    expensesMinor += BigInt(moneyToMinor(expense.amount, 'expense_amount'));
+  }
+
+  const byMethod: Record<string, number> = {};
+  for (const [method, minor] of Object.entries(byMethodMinor)) byMethod[method] = minorToTaka(minor);
+
+  return {
+    date,
+    salesCount,
+    salesTotal: minorToTaka(salesMinor),
+    cashPaid: minorToTaka(cashMinor),
+    digitalPaid: minorToTaka(digitalMinor),
+    duesCreated: minorToTaka(duesCreatedMinor),
+    duesOutstandingTotal: minorToTaka(duesOutstandingMinor),
+    duesCollected: null,
+    duesCollectedAvailable: false,
+    expensesTotal: minorToTaka(expensesMinor),
+    expensesCount,
+    // Cash in hand = cash actually received today minus today's
+    // expenses. It can go negative when expenses were paid from
+    // elsewhere; that is reported as-is, never floored to 0.
+    cashInHand: minorToTaka(cashMinor - expensesMinor),
+    byMethod,
+  };
+}
+
 export const Storage = {
   // ---------------- Users (Owners/Admin) ----------------
   async getUserById(id: string) {
@@ -185,11 +402,85 @@ export const Storage = {
   async createUser(data: typeof schema.users.$inferInsert) {
     return op(
       async () => {
-        const [u] = await db.insert(schema.users).values(data).returning();
+        // A store gets its Smart QR code at creation (migration 0004).
+        // A caller-supplied code is honoured only if well-formed and
+        // unused; otherwise a fresh random code is generated.
+        let storeCode = (data as any).storeCode;
+        if (typeof storeCode !== 'string' || !/^[A-Za-z0-9_-]{8,64}$/.test(storeCode)) {
+          do {
+            storeCode = crypto.randomBytes(8).toString('hex');
+            const clash = await db
+              .select({ id: schema.users.id })
+              .from(schema.users)
+              .where(eq(schema.users.storeCode, storeCode));
+            if (clash.length === 0) break;
+          } while (true);
+        }
+        const [u] = await db
+          .insert(schema.users)
+          .values({ ...data, storeCode })
+          .returning();
         return u;
       },
       () => MemStorage.createUser(data),
     );
+  },
+  // Per-store Smart QR: exact, case-sensitive code lookup. Null for an
+  // unknown code — callers answer STORE_NOT_FOUND, never another store.
+  async getUserByStoreCode(code: string) {
+    if (typeof code !== 'string' || !code) return null;
+    return op(
+      async () => {
+        const [u] = await db.select().from(schema.users).where(eq(schema.users.storeCode, code));
+        return u || null;
+      },
+      () => MemStorage.getUserByStoreCode(code),
+    );
+  },
+  // Backfill for legacy stores created before store codes existed.
+  async ensureStoreCode(userId: string) {
+    return op(
+      async () => {
+        const [existing] = await db.select().from(schema.users).where(eq(schema.users.id, userId));
+        if (!existing) throw new Error('User not found');
+        if ((existing as any).storeCode) return existing;
+        let storeCode: string;
+        do {
+          storeCode = crypto.randomBytes(8).toString('hex');
+          const clash = await db
+            .select({ id: schema.users.id })
+            .from(schema.users)
+            .where(eq(schema.users.storeCode, storeCode));
+          if (clash.length === 0) break;
+        } while (true);
+        const [updated] = await db
+          .update(schema.users)
+          .set({ storeCode })
+          .where(and(eq(schema.users.id, userId), isNull(schema.users.storeCode)))
+          .returning();
+        // Another concurrent ensure won the race: re-read the winner.
+        if (!updated) {
+          const [winner] = await db.select().from(schema.users).where(eq(schema.users.id, userId));
+          return winner!;
+        }
+        return updated;
+      },
+      () => MemStorage.ensureStoreCode(userId),
+    );
+  },
+  // Public storefront resolution, composed from the two op-based reads
+  // above so it works identically on PostgreSQL and on the fallback
+  // store. Returns null for an unknown code. The store view strips
+  // every internal field (see server/publicView.ts) and the product
+  // list strips cost and hides non-online items.
+  async getPublicStorefront(code: string) {
+    const user = await Storage.getUserByStoreCode(code);
+    if (!user) return null;
+    const products = await Storage.getProductsByStore(user.id);
+    return {
+      store: publicStoreView(user),
+      products: publicProductList(products.filter((product: any) => product.isOnlineVisible !== false)),
+    };
   },
   async updateUser(id: string, data: Partial<typeof schema.users.$inferInsert>) {
     return op(
@@ -1059,6 +1350,111 @@ export const Storage = {
       () => MemStorage.createGuestOrder(data),
     );
   },
+  // Store-QR pickup order (PostgreSQL branch; the fallback branch is
+  // MemStorage.createPickupGuestOrder with the same contract). The
+  // SAME guest-order pipeline as a table order — same table,
+  // lifecycle, KDS queue and settlement — entered through a store
+  // code instead of a table id, with tableId NULL (migration 0005).
+  // Items must belong to this store and be online-visible, quantities
+  // are validated, and totals are recomputed from server-side product
+  // prices; a client-supplied total is never trusted.
+  async createPickupGuestOrder(data: {
+    idempotencyKey: string;
+    storeId: string;
+    items: Array<{ id: string; quantity: number; note?: string }>;
+    note?: string;
+  }) {
+    return op(
+      async () => {
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(data.idempotencyKey)) {
+          throw new StorageRuleError('INVALID_IDEMPOTENCY_KEY', 'A valid request id is required.');
+        }
+        if (!data.storeId || !Array.isArray(data.items) || data.items.length === 0) {
+          throw new StorageRuleError('INVALID_ORDER', 'A store and at least one order item are required.');
+        }
+        const ids = data.items.map((item) => item?.id);
+        if (ids.some((id) => typeof id !== 'string' || !id.trim()) || new Set(ids).size !== ids.length) {
+          throw new StorageRuleError('INVALID_ORDER_ITEMS', 'Order items must reference unique products.');
+        }
+        try {
+          data.items.forEach((item) => quantityToUnits(item.quantity));
+        } catch {
+          throw new StorageRuleError('INVALID_QUANTITY', 'Every order quantity must be a positive number.');
+        }
+
+        return db.transaction(async (tx: any) => {
+          const [store] = await tx.select().from(schema.users).where(eq(schema.users.id, data.storeId)).for('update');
+          if (!store) throw new StorageRuleError('STORE_NOT_FOUND', 'This store does not exist.', 404);
+
+          const [existing] = await tx
+            .select()
+            .from(schema.guestOrders)
+            .where(eq(schema.guestOrders.id, data.idempotencyKey))
+            .for('update');
+          if (existing) {
+            const existingItems = Array.isArray(existing.items)
+              ? (existing.items as Array<{ id: string; quantity: number; note?: string }>)
+                  .map(({ id, quantity, note }) => ({ id, quantity, note: note || '' }))
+                  .sort((a, b) => a.id.localeCompare(b.id))
+              : [];
+            const requestedItems = data.items
+              .map(({ id, quantity, note }) => ({ id, quantity, note: note || '' }))
+              .sort((a, b) => a.id.localeCompare(b.id));
+            if (
+              (existing as any).tableId !== null ||
+              existing.storeId !== store.id ||
+              (existing.note || '') !== (data.note || '') ||
+              JSON.stringify(existingItems) !== JSON.stringify(requestedItems)
+            ) {
+              throw new StorageRuleError(
+                'IDEMPOTENCY_KEY_REUSED',
+                'This request id was already used for a different order.',
+                409,
+              );
+            }
+            return existing;
+          }
+
+          const products = new Map<string, schema.Product>();
+          for (const id of [...new Set(ids)].sort()) {
+            const [product] = await tx
+              .select()
+              .from(schema.products)
+              .where(and(eq(schema.products.id, id), eq(schema.products.storeId, store.id)))
+              .for('update');
+            if (!product || product.isOnlineVisible === false) {
+              throw new StorageRuleError('MENU_ITEM_UNAVAILABLE', 'A selected menu item is no longer available.', 409);
+            }
+            products.set(id, product);
+          }
+
+          const items = data.items.map((requested) => {
+            const product = products.get(requested.id)!;
+            return {
+              ...product,
+              quantity: requested.quantity,
+              ...(requested.note ? { note: requested.note } : {}),
+            };
+          });
+          const totals = calculateSaleTotals(items, 0, 0, 0, 'cash');
+          const [order] = await tx
+            .insert(schema.guestOrders)
+            .values({
+              id: data.idempotencyKey,
+              storeId: store.id,
+              tableId: null,
+              items,
+              note: data.note || null,
+              status: 'pending',
+              totalAmount: totals.subTotal,
+            })
+            .returning();
+          return order;
+        });
+      },
+      () => MemStorage.createPickupGuestOrder(data),
+    );
+  },
   async getGuestOrderById(id: string) {
     return op(
       async () => {
@@ -1315,6 +1711,36 @@ export const Storage = {
       () => MemStorage.getOnlineOrdersByStore(storeId),
     );
   },
+  // Dashboard headline totals: POS sales + delivered online orders.
+  // Same aggregation on both backends (PostgreSQL rows, or the
+  // disk-persisted fallback lists) via computeDashboardTotals, so the
+  // figure cannot drift between backends.
+  async getDashboardTotals(storeId: string): Promise<DashboardTotals> {
+    return op(
+      async () => {
+        const [sales, onlineOrders] = await Promise.all([
+          db.select().from(schema.sales).where(eq(schema.sales.storeId, storeId)),
+          db.select().from(schema.onlineOrders).where(eq(schema.onlineOrders.storeId, storeId)),
+        ]);
+        return computeDashboardTotals(sales as DashboardSaleInput[], onlineOrders as DashboardOnlineOrderInput[]);
+      },
+      async () =>
+        computeDashboardTotals(
+          (await MemStorage.getSalesByStore(storeId)) as DashboardSaleInput[],
+          (await MemStorage.getOnlineOrdersByStore(storeId)) as DashboardOnlineOrderInput[],
+        ),
+    );
+  },
+  /** Daily hisab for one store + day. Reuses the store-scoped sale
+   *  and expense reads (each already PG-with-mem-fallback), so this
+   *  works on both backends with no new SQL. */
+  async getHisab(storeId: string, date: string): Promise<HisabSummary> {
+    const [sales, expenses] = await Promise.all([
+      Storage.getSalesByStore(storeId),
+      Storage.getExpensesByStore(storeId),
+    ]);
+    return computeHisab(sales as HisabSaleInput[], expenses as HisabExpenseInput[], date);
+  },
   async updateOnlineOrderStatus(id: string, status: string) {
     return op(
       async () => {
@@ -1536,7 +1962,7 @@ export const Storage = {
               0,
             ),
             paymentMethod: input.paymentMethod === 'split' ? 'cash' : input.paymentMethod,
-            customerName: `Table Guest (${order.tableId})`,
+            customerName: (order as any).tableId ? `Table Guest (${(order as any).tableId})` : 'Pickup Guest',
             customerPhone: null,
             paidAmount,
             cashReceived,
@@ -1832,6 +2258,75 @@ export const Storage = {
         });
       },
       () => MemStorage.createBranch(data),
+    );
+  },
+  /** Wave 2 (Item 2) — guarded branch delete, same rule as
+   *  MemStorage.deleteBranch on both backends: a branch holding stock,
+   *  sales, dues, counters, purchase orders or shifts is refused with
+   *  BRANCH_NOT_EMPTY naming every blocker; nothing is deleted. An
+   *  empty branch deletes, and a deleted default promotes the oldest
+   *  remaining branch of the store. */
+  async deleteBranch(storeId: string, branchId: string): Promise<{ deleted: true }> {
+    return op(
+      async () => {
+        return db.transaction(async (tx: any) => {
+          const [branch] = await tx
+            .select()
+            .from(schema.branches)
+            .where(and(eq(schema.branches.id, branchId), eq(schema.branches.storeId, storeId)));
+          if (!branch) throw new StorageRuleError('BRANCH_NOT_FOUND', 'Branch not found in this store.', 404);
+          const [assigned, branchSales, branchCounters, branchPOs, branchShifts] = await Promise.all([
+            tx
+              .select()
+              .from(schema.products)
+              .where(and(eq(schema.products.storeId, storeId), eq(schema.products.branchId, branchId))),
+            tx
+              .select()
+              .from(schema.sales)
+              .where(and(eq(schema.sales.storeId, storeId), eq(schema.sales.branchId, branchId))),
+            tx.select().from(schema.counters).where(eq(schema.counters.branchId, branchId)),
+            tx
+              .select()
+              .from(schema.purchaseOrders)
+              .where(and(eq(schema.purchaseOrders.storeId, storeId), eq(schema.purchaseOrders.branchId, branchId))),
+            tx
+              .select()
+              .from(schema.shifts)
+              .where(and(eq(schema.shifts.storeId, storeId), eq(schema.shifts.branchId, branchId))),
+          ]);
+          const stockUnits = (assigned as any[]).reduce((acc, p) => acc + (p.stock || 0), 0);
+          const dueSales = (branchSales as any[]).filter((s) => (s.dueAmount || 0) > 0);
+          const dueTotal = dueSales.reduce((acc, s) => acc + (s.dueAmount || 0), 0);
+          const blockers: string[] = [];
+          if (assigned.length > 0) blockers.push(`${assigned.length} product(s) with ${stockUnits} unit(s) of stock`);
+          if (branchSales.length > 0) blockers.push(`${branchSales.length} sale(s)`);
+          if (dueSales.length > 0)
+            blockers.push(`${dueSales.length} unpaid due(s) totalling ৳${dueTotal.toLocaleString()}`);
+          if (branchCounters.length > 0) blockers.push(`${branchCounters.length} counter(s)`);
+          if (branchPOs.length > 0) blockers.push(`${branchPOs.length} purchase order(s)`);
+          if (branchShifts.length > 0) blockers.push(`${branchShifts.length} shift(s)`);
+          if (blockers.length > 0) {
+            throw new StorageRuleError(
+              'BRANCH_NOT_EMPTY',
+              `Cannot delete branch "${branch.name}": it still has ${blockers.join(', ')}. Clear or move these records first — nothing was deleted.`,
+              409,
+            );
+          }
+          await tx.delete(schema.branches).where(eq(schema.branches.id, branchId));
+          if (branch.isDefault) {
+            const remaining = await tx
+              .select()
+              .from(schema.branches)
+              .where(eq(schema.branches.storeId, storeId))
+              .orderBy(schema.branches.createdAt);
+            if (remaining[0]) {
+              await tx.update(schema.branches).set({ isDefault: true }).where(eq(schema.branches.id, remaining[0].id));
+            }
+          }
+          return { deleted: true as const };
+        });
+      },
+      () => MemStorage.deleteBranch(storeId, branchId),
     );
   },
   async getCountersByBranch(storeId: string, branchId: string) {

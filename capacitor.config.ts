@@ -16,6 +16,19 @@ import type { CapacitorConfig } from '@capacitor/cli';
 //
 // androidScheme 'https' keeps the WebView origin secure-context so
 // crypto.randomUUID() (used for sale / idempotency ids) keeps working.
+//
+// Phase 7 (Item 3) — native plugins registered in this shell (wired by
+// `npx cap sync android` into android/capacitor.settings.gradle; no
+// MainActivity edit is needed, Capacitor 8 auto-registers them):
+//   - @capacitor/camera: native barcode photo (components/
+//     BarcodeScanner.tsx). Declares CAMERA in AndroidManifest.
+//   - @capacitor-community/speech-recognition: native Bangla voice
+//     (services/voice.ts). Declares RECORD_AUDIO in AndroidManifest.
+// Neither plugin needs a `plugins:` config block: both are used with
+// their defaults (camera: rear, no gallery save; speech: system
+// dialog, bn-BD / en-US). The live-preview barcode plugin was NOT
+// added: @capacitor-community/barcode-scanner only supports
+// Capacitor 5, so on Capacitor 8 the native scan is photo-based.
 
 const config: CapacitorConfig = {
   appId: 'com.amardokan.pos',

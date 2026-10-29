@@ -21,10 +21,11 @@ import {
   Clock3,
 } from 'lucide-react';
 import { useApiData } from '../hooks/useApiData';
-import { StorageService } from '../services/storage';
+import { StorageService, type DashboardTotals } from '../services/storage';
 import SubscriptionModal from './SubscriptionModal';
 import InventoryInsights from './InventoryInsights';
 import DecisionCards from './DecisionCards';
+import MorningBriefing from './MorningBriefing';
 
 interface DashboardProps {
   sales: Sale[];
@@ -53,6 +54,19 @@ const Dashboard: React.FC<DashboardProps> = ({ lang, onNavigate }) => {
     refetch: refetchOnlineOrders,
   } = useApiData(() => StorageService.getStoreOnlineOrders(), []);
   const onlineOrders = onlineOrdersData || [];
+
+  // Wave 2 (Item 1, UI wiring) — server headline totals from
+  // GET /api/dashboard/totals (POS sales + delivered online orders,
+  // pending/cancelled kept separate). While it loads, or if the fetch
+  // fails (e.g. the viewer lacks view_reports — the App also gates
+  // this screen on that permission), the dashboard falls back to the
+  // previous client-side display and says so, instead of showing a
+  // wrong or empty headline.
+  const { data: totalsData, error: totalsError } = useApiData<DashboardTotals>(
+    () => StorageService.getDashboardTotals(),
+    [],
+  );
+  const hasServerTotals = !!totalsData && !totalsError;
 
   useEffect(() => {
     StorageService.getCurrentUser().then(setUser);
@@ -144,6 +158,16 @@ const Dashboard: React.FC<DashboardProps> = ({ lang, onNavigate }) => {
   }, [onlineOrders]);
 
   const combinedRevenue = stats.totalSales + onlineStats.totalOnlineRevenue;
+
+  // Headline figure (computed after stats): server total when available,
+  // otherwise the previous client-side POS-only total. The online section
+  // below reuses the same server figures when available, so a delivered
+  // online order is counted exactly once in the display.
+  const headlineTotalSales = hasServerTotals ? totalsData!.totalSales : stats.totalSales;
+  const displayOnlineRevenue = hasServerTotals
+    ? totalsData!.onlineCompletedTotalSales
+    : onlineStats.totalOnlineRevenue;
+  const displayCombinedRevenue = hasServerTotals ? totalsData!.totalSales : combinedRevenue;
 
   const statusLabel: Record<string, string> = {
     placed: 'Placed',
@@ -248,6 +272,15 @@ const Dashboard: React.FC<DashboardProps> = ({ lang, onNavigate }) => {
       </div>
 
       {/* KPI Cards */}
+      {totalsError && (
+        <p
+          data-testid="dashboard-totals-fallback"
+          role="note"
+          className="bg-amber-50 border border-amber-200 text-amber-800 px-4 py-2 rounded-lg text-sm font-medium"
+        >
+          {t.dashboardTotalsUnavailable}
+        </p>
+      )}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 xl:grid-cols-8 gap-4">
         <div className="ad-card bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex items-center space-x-3 col-span-1 md:col-span-2">
           <div className="p-3 bg-emerald-100 text-emerald-600 rounded-full">
@@ -255,7 +288,16 @@ const Dashboard: React.FC<DashboardProps> = ({ lang, onNavigate }) => {
           </div>
           <div>
             <p className="text-xs text-gray-500">{t.totalSales}</p>
-            <p className="text-lg font-bold text-gray-800">৳{stats.totalSales.toLocaleString()}</p>
+            <p data-testid="dashboard-headline-total" className="text-lg font-bold text-gray-800">
+              ৳{headlineTotalSales.toLocaleString()}
+            </p>
+            {hasServerTotals && (
+              <p data-testid="dashboard-headline-breakdown" className="text-[11px] text-gray-500">
+                {t.dashboardOnlineDelivered}: ৳{totalsData!.onlineCompletedTotalSales.toLocaleString()} ·{' '}
+                {t.dashboardOnlinePending}: ৳{totalsData!.onlinePendingTotalSales.toLocaleString()} ·{' '}
+                {t.dashboardOnlineCancelled}: {totalsData!.onlineCancelledCount}
+              </p>
+            )}
           </div>
         </div>
         <div className="ad-card bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex items-center space-x-3 col-span-1 md:col-span-2">
@@ -290,6 +332,9 @@ const Dashboard: React.FC<DashboardProps> = ({ lang, onNavigate }) => {
       {/* Phase 5 — decision cards: real numbers, one tap to act. */}
       <DecisionCards lang={lang} onNavigate={onNavigate} />
 
+      {/* DISTINCTIVE FEATURES (2026-10-29) — morning briefing section only. */}
+      <MorningBriefing lang={lang} onNavigate={onNavigate} />
+
       {/* --- ONLINE SALES OVERVIEW (Marketplace orders integrated into the owner dashboard) --- */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
         <div className="p-5 border-b border-gray-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 bg-gradient-to-r from-indigo-50 to-white">
@@ -305,11 +350,17 @@ const Dashboard: React.FC<DashboardProps> = ({ lang, onNavigate }) => {
           <div className="flex items-center gap-6">
             <div className="text-right">
               <p className="text-xs text-gray-500">Online Revenue</p>
-              <p className="text-xl font-bold text-indigo-700">৳{onlineStats.totalOnlineRevenue.toLocaleString()}</p>
+              <p className="text-xl font-bold text-indigo-700">৳{displayOnlineRevenue.toLocaleString()}</p>
+              {hasServerTotals && (
+                <p className="text-[11px] text-gray-500">
+                  {t.dashboardOnlineDelivered} only — {t.dashboardOnlinePending.toLowerCase()}: ৳
+                  {totalsData!.onlinePendingTotalSales.toLocaleString()}
+                </p>
+              )}
             </div>
             <div className="text-right">
               <p className="text-xs text-gray-500">Combined Revenue</p>
-              <p className="text-xl font-bold text-emerald-700">৳{combinedRevenue.toLocaleString()}</p>
+              <p className="text-xl font-bold text-emerald-700">৳{displayCombinedRevenue.toLocaleString()}</p>
             </div>
           </div>
         </div>

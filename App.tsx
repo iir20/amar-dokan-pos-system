@@ -19,6 +19,7 @@ import {
   PieChart,
   MessageCircle,
   Store,
+  Info,
 } from 'lucide-react';
 import { StorageService } from './services/storage';
 import { Sale, Language, User, Permission } from './types';
@@ -46,12 +47,17 @@ const DueList = React.lazy(() => import('./components/DueList'));
 const Auth = React.lazy(() => import('./components/Auth'));
 const Expenses = React.lazy(() => import('./components/Expenses'));
 const Profile = React.lazy(() => import('./components/Profile'));
+const SettingsScreen = React.lazy(() => import('./components/Settings'));
 const AdminPanel = React.lazy(() => import('./components/AdminPanel'));
 const SubscriptionModal = React.lazy(() => import('./components/SubscriptionModal'));
 const StoreOrders = React.lazy(() => import('./components/StoreOrders'));
 const SyncReconciliationModal = React.lazy(() => import('./components/SyncReconciliationModal'));
 const ShiftModal = React.lazy(() => import('./components/ShiftModal'));
 const Phase3Panel = React.lazy(() => import('./components/Phase3Panel'));
+// ADDITIONAL SCOPE — About screen nav entry only.
+const About = React.lazy(() => import('./components/About'));
+// DISTINCTIVE FEATURES (2026-10-29) — nav entry for the new screen only.
+const BazarList = React.lazy(() => import('./components/BazarList'));
 
 // Restaurant Components
 const TableManager = React.lazy(() => import('./components/restaurant/TableManager'));
@@ -60,6 +66,9 @@ const GuestMenu = React.lazy(() => import('./components/restaurant/GuestMenu'));
 
 // Marketplace (Customer) Components
 const MarketplaceApp = React.lazy(() => import('./components/marketplace/MarketplaceApp'));
+
+// Per-store Smart QR storefront (public, no login).
+const Storefront = React.lazy(() => import('./components/Storefront'));
 
 import { subscribeSync, getOutbox, flushOutbox, retryFailedOutbox } from './services/amarSync';
 import { subscribeConnection, type ConnectionState } from './services/api';
@@ -79,13 +88,16 @@ type View =
   | 'dueList'
   | 'expenses'
   | 'profile'
+  | 'settings'
   | 'admin'
   | 'tables'
   | 'kitchen'
   | 'guest_menu'
   | 'reports'
   | 'orders'
-  | 'phase3';
+  | 'phase3'
+  | 'about'
+  | 'bazar';
 
 const App = () => {
   const [booted, setBooted] = useState(false);
@@ -101,6 +113,19 @@ const App = () => {
   // Guest Mode State
   const [activeGuestTableId, setActiveGuestTableId] = useState<string | null>(null);
   const [activeGuestStoreId, setActiveGuestStoreId] = useState<string | null>(null);
+
+  // Per-store Smart QR storefront: a /s/<storeCode> URL opens the
+  // public storefront WITHOUT login (same bypass shape as guest mode).
+  // Only the /s/<code> path form is recognised; anything else falls
+  // through to the normal app.
+  const [storefrontCode, setStorefrontCode] = useState<string | null>(() => {
+    try {
+      const match = /^\/s\/([A-Za-z0-9_-]{8,64})\/?$/.exec(window.location.pathname);
+      return match ? match[1] : null;
+    } catch {
+      return null;
+    }
+  });
 
   // RBAC State
   const [permissions, setPermissions] = useState<Permission[] | 'all'>('all');
@@ -272,6 +297,33 @@ const App = () => {
     );
   }
 
+  // Public store-QR storefront (no login required). Rendered before
+  // the auth gate so a scanned QR opens the store even for a guest.
+  if (storefrontCode) {
+    return (
+      <ErrorBoundary>
+        <Suspense
+          fallback={
+            <div className="h-screen w-screen flex items-center justify-center">
+              <Loader />
+            </div>
+          }
+        >
+          <div className="animate-fade-in h-full">
+            <Storefront
+              lang={lang}
+              code={storefrontCode}
+              onExit={() => {
+                setStorefrontCode(null);
+                if (!isAuthenticated) window.location.assign('/');
+              }}
+            />
+          </div>
+        </Suspense>
+      </ErrorBoundary>
+    );
+  }
+
   if (!isAuthenticated && !isGuestMode) {
     return (
       <ErrorBoundary>
@@ -385,6 +437,8 @@ const App = () => {
         return TRANSLATIONS[lang].expenses;
       case 'profile':
         return TRANSLATIONS[lang].profile;
+      case 'settings':
+        return TRANSLATIONS[lang].settings;
       case 'admin':
         return 'Admin Panel';
       case 'tables':
@@ -397,6 +451,8 @@ const App = () => {
         return 'Online Orders';
       case 'phase3':
         return TRANSLATIONS[lang].depthPanel;
+      case 'about':
+        return TRANSLATIONS[lang].aboutTitle;
       default:
         return 'Amar Dokan';
     }
@@ -511,7 +567,17 @@ const App = () => {
                   reqPerm={['view_reports', 'manage_expenses']}
                 />
                 <NavItem view="reports" icon={PieChart} label={TRANSLATIONS[lang].dailyReport} reqPerm="view_reports" />
+                {/* DISTINCTIVE FEATURES (2026-10-29) — new screens only. */}
+                <NavItem
+                  view="bazar"
+                  icon={ClipboardList}
+                  label={TRANSLATIONS[lang].bazarListTitle}
+                  reqPerm="view_reports"
+                />
                 <NavItem view="profile" icon={UserCircle} label={TRANSLATIONS[lang].profile} />
+                <NavItem view="settings" icon={Settings} label={TRANSLATIONS[lang].settings} />
+                {/* ADDITIONAL SCOPE — About nav entry only. */}
+                <NavItem view="about" icon={Info} label={TRANSLATIONS[lang].aboutTitle} />
               </>
             )}
 
@@ -695,9 +761,16 @@ const App = () => {
                   <Expenses lang={lang} canManage={hasPermission('manage_expenses')} />
                 )}
                 {currentView === 'profile' && <Profile lang={lang} isOwner={permissions === 'all'} />}
+                {currentView === 'settings' && (
+                  <SettingsScreen lang={lang} onLanguageChange={setLang} isOwner={permissions === 'all'} />
+                )}
                 {currentView === 'admin' && isAdmin && <AdminPanel />}
                 {currentView === 'reports' && hasPermission('view_reports') && <DailyReport lang={lang} />}
                 {currentView === 'phase3' && hasPermission('view_reports') && <Phase3Panel lang={lang} />}
+                {/* ADDITIONAL SCOPE — About view case only. */}
+                {currentView === 'about' && <About lang={lang} />}
+                {/* DISTINCTIVE FEATURES (2026-10-29) — new screens only. */}
+                {currentView === 'bazar' && hasPermission('view_reports') && <BazarList lang={lang} />}
                 {currentView === 'tables' && hasPermission('manage_settings') && (
                   <TableManager
                     lang={lang}

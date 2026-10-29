@@ -5,7 +5,9 @@ import { Printer, Download, Loader2 } from 'lucide-react';
 import { StorageService } from '../services/storage';
 // Phase 2 — Bluetooth thermal printing (native app only) + .txt fallback.
 import { isNativePlatform } from '../services/native';
+import { ensurePermission, permissionRationale, permissionSettingsGuidance } from '../services/permissions';
 import { printViaBluetooth, downloadEscPosText } from '../services/nativePrint';
+import { toBanglaDigits, formatQtyWithUnit } from '../utils/currency';
 import html2canvas from 'html2canvas';
 import { jsPDF } from 'jspdf';
 
@@ -14,6 +16,102 @@ interface InvoiceProps {
   lang: Language;
   onClose: () => void;
 }
+
+export interface EscPosStoreInfo {
+  storeName: string;
+  address: string;
+  phone: string;
+}
+
+/**
+ * Wave 2 (second addition) — the single ESC/POS receipt-text builder,
+ * shared by Invoice and the new ReceiptView so a reprint from sales
+ * history is byte-identical to the original print. Pure function:
+ * same sale + store + format always yields the same text.
+ * NOTE: ESC/POS text stays ASCII + ৳-free of Bangla digits on purpose:
+ * most thermal printers have no Bangla glyphs.
+ */
+export const buildEscPosReceiptText = (sale: Sale, store: EscPosStoreInfo, format: '80mm' | '58mm'): string => {
+  const width = format === '58mm' ? 32 : 42;
+  const divider = '-'.repeat(width);
+
+  const pad = (str: string, len: number, align: 'left' | 'right' | 'center' = 'left') => {
+    const s = (str || '').slice(0, len);
+    if (align === 'center') {
+      const left = Math.floor((len - s.length) / 2);
+      return ' '.repeat(Math.max(0, left)) + s + ' '.repeat(Math.max(0, len - s.length - left));
+    }
+    if (align === 'right') {
+      return ' '.repeat(Math.max(0, len - s.length)) + s;
+    }
+    return s + ' '.repeat(Math.max(0, len - s.length));
+  };
+
+  const row = (left: string, right: string) => {
+    const rightLen = right.length;
+    const leftLen = width - rightLen - 1;
+    return pad(left, leftLen) + ' ' + right;
+  };
+
+  const changeAmount = sale.changeAmount ?? Math.max(0, sale.paidAmount - sale.totalAmount);
+
+  const lines: string[] = [];
+  lines.push(pad(store.storeName, width, 'center'));
+  if (store.address) lines.push(pad(store.address, width, 'center'));
+  if (store.phone) lines.push(pad(`Tel: ${store.phone}`, width, 'center'));
+  lines.push(divider);
+  lines.push(row(`Inv: ${sale.id.slice(0, 8)}`, new Date(sale.date).toLocaleDateString()));
+  if (sale.customerName) lines.push(row('Customer:', sale.customerName));
+  if (sale.customerPhone) lines.push(row('Phone:', sale.customerPhone));
+  if (sale.servedBy) lines.push(row('Served by:', sale.servedBy));
+  lines.push(divider);
+
+  if (format === '58mm') {
+    lines.push(row('Item', 'Qty x Price'));
+  } else {
+    lines.push(pad('Item', 20) + pad('Qty', 6, 'center') + pad('Price', 8, 'right') + pad('Total', 8, 'right'));
+  }
+  lines.push(divider);
+
+  for (const item of sale.items) {
+    const name = item.name;
+    const total = (item.price * item.quantity).toFixed(2);
+    if (format === '58mm') {
+      lines.push(name.slice(0, width));
+      lines.push(row(`  ${item.quantity} ${item.unit || 'pcs'} @${item.price}`, `৳${total}`));
+    } else {
+      lines.push(
+        pad(name, 20) +
+          pad(`${item.quantity}`, 6, 'center') +
+          pad(`${item.price.toFixed(2)}`, 8, 'right') +
+          pad(`৳${total}`, 8, 'right'),
+      );
+    }
+  }
+
+  lines.push(divider);
+  lines.push(row('Subtotal:', `৳${(sale.subTotal || sale.totalAmount).toFixed(2)}`));
+  if (sale.discount > 0) lines.push(row('Discount:', `-৳${sale.discount.toFixed(2)}`));
+  if (sale.vat > 0) lines.push(row('VAT:', `+৳${sale.vat.toFixed(2)}`));
+  lines.push(divider);
+  lines.push(row('TOTAL:', `৳${sale.totalAmount.toFixed(2)}`));
+  lines.push(row(`Paid (${sale.paymentMethod}):`, `৳${sale.paidAmount.toFixed(2)}`));
+  if (sale.cashReceived != null && sale.cashReceived > 0) {
+    lines.push(row('Cash Received:', `৳${sale.cashReceived.toFixed(2)}`));
+  }
+  if (sale.dueAmount > 0) {
+    lines.push(row('Due (Rest):', `৳${sale.dueAmount.toFixed(2)}`));
+  }
+  if (changeAmount > 0) {
+    lines.push(row('Change:', `৳${changeAmount.toFixed(2)}`));
+  }
+  lines.push(divider);
+  lines.push(pad('Thank you for shopping with us!', width, 'center'));
+  lines.push(pad(sale.id, width, 'center'));
+  lines.push('\n\n\x1D\x56\x00'); // ESC/POS paper cut command
+
+  return lines.join('\n');
+};
 
 const Invoice: React.FC<InvoiceProps> = ({ sale, lang, onClose }) => {
   const t = TRANSLATIONS[lang];
@@ -83,85 +181,12 @@ const Invoice: React.FC<InvoiceProps> = ({ sale, lang, onClose }) => {
 
   const [format, setFormat] = useState<'80mm' | '58mm'>('80mm');
 
-  const generateEscPosText = () => {
-    const width = format === '58mm' ? 32 : 42;
-    const divider = '-'.repeat(width);
+  // Shared builder (above): reprint text is identical to the original.
+  const generateEscPosText = () => buildEscPosReceiptText(sale, { storeName, address, phone }, format);
 
-    const pad = (str: string, len: number, align: 'left' | 'right' | 'center' = 'left') => {
-      const s = (str || '').slice(0, len);
-      if (align === 'center') {
-        const left = Math.floor((len - s.length) / 2);
-        return ' '.repeat(Math.max(0, left)) + s + ' '.repeat(Math.max(0, len - s.length - left));
-      }
-      if (align === 'right') {
-        return ' '.repeat(Math.max(0, len - s.length)) + s;
-      }
-      return s + ' '.repeat(Math.max(0, len - s.length));
-    };
-
-    const row = (left: string, right: string) => {
-      const rightLen = right.length;
-      const leftLen = width - rightLen - 1;
-      return pad(left, leftLen) + ' ' + right;
-    };
-
-    const lines: string[] = [];
-    lines.push(pad(storeName, width, 'center'));
-    if (address) lines.push(pad(address, width, 'center'));
-    if (phone) lines.push(pad(`Tel: ${phone}`, width, 'center'));
-    lines.push(divider);
-    lines.push(row(`Inv: ${sale.id.slice(0, 8)}`, new Date(sale.date).toLocaleDateString()));
-    if (sale.customerName) lines.push(row('Customer:', sale.customerName));
-    if (sale.customerPhone) lines.push(row('Phone:', sale.customerPhone));
-    lines.push(divider);
-
-    // Items header
-    if (format === '58mm') {
-      lines.push(row('Item', 'Qty x Price'));
-    } else {
-      lines.push(pad('Item', 20) + pad('Qty', 6, 'center') + pad('Price', 8, 'right') + pad('Total', 8, 'right'));
-    }
-    lines.push(divider);
-
-    for (const item of sale.items) {
-      const name = item.name;
-      const total = (item.price * item.quantity).toFixed(2);
-      if (format === '58mm') {
-        lines.push(name.slice(0, width));
-        lines.push(row(`  ${item.quantity} ${item.unit || 'pcs'} @${item.price}`, `৳${total}`));
-      } else {
-        lines.push(
-          pad(name, 20) +
-            pad(`${item.quantity}`, 6, 'center') +
-            pad(`${item.price.toFixed(2)}`, 8, 'right') +
-            pad(`৳${total}`, 8, 'right'),
-        );
-      }
-    }
-
-    lines.push(divider);
-    lines.push(row('Subtotal:', `৳${(sale.subTotal || sale.totalAmount).toFixed(2)}`));
-    if (sale.discount > 0) lines.push(row('Discount:', `-৳${sale.discount.toFixed(2)}`));
-    if (sale.vat > 0) lines.push(row('VAT:', `+৳${sale.vat.toFixed(2)}`));
-    lines.push(divider);
-    lines.push(row('TOTAL:', `৳${sale.totalAmount.toFixed(2)}`));
-    lines.push(row(`Paid (${sale.paymentMethod}):`, `৳${sale.paidAmount.toFixed(2)}`));
-    if (sale.cashReceived != null && sale.cashReceived > 0) {
-      lines.push(row('Cash Received:', `৳${sale.cashReceived.toFixed(2)}`));
-    }
-    if (sale.dueAmount > 0) {
-      lines.push(row('Due (Rest):', `৳${sale.dueAmount.toFixed(2)}`));
-    }
-    if (changeAmount > 0) {
-      lines.push(row('Change:', `৳${changeAmount.toFixed(2)}`));
-    }
-    lines.push(divider);
-    lines.push(pad('Thank you for shopping with us!', width, 'center'));
-    lines.push(pad(sale.id, width, 'center'));
-    lines.push('\n\n\x1D\x56\x00'); // ESC/POS paper cut command
-
-    return lines.join('\n');
-  };
+  // Screen/PDF amounts use Bangla digits when lang is bn. ESC/POS text
+  // deliberately does not (see buildEscPosReceiptText).
+  const fmt = (n: number) => (lang === 'bn' ? toBanglaDigits(n.toFixed(2)) : n.toFixed(2));
 
   // The .txt download fallback is unchanged from before Phase 2 — it must
   // keep working on the web, where no Bluetooth printer path exists.
@@ -171,6 +196,23 @@ const Invoice: React.FC<InvoiceProps> = ({ sale, lang, onClose }) => {
 
   const [btStatus, setBtStatus] = useState('');
   const handleBluetoothPrint = async () => {
+    // Point-of-use Bluetooth permission first (native only): a denial
+    // shows the Settings path and keeps the .txt download fallback.
+    if (isNativePlatform()) {
+      const perm = await ensurePermission('bluetooth');
+      if (perm.outcome === 'denied-retryable') {
+        setBtStatus(
+          `${permissionRationale('bluetooth', lang)} — tap Bluetooth Print again to retry, or use the ESC/POS .txt download instead.`,
+        );
+        return;
+      }
+      if (perm.outcome === 'permanently-denied') {
+        setBtStatus(
+          `${permissionSettingsGuidance('bluetooth', lang) ?? 'Bluetooth permission is denied.'} — use the ESC/POS .txt download instead.`,
+        );
+        return;
+      }
+    }
     setBtStatus('Connecting to printer…');
     try {
       const result = await printViaBluetooth(generateEscPosText());
@@ -189,7 +231,11 @@ const Invoice: React.FC<InvoiceProps> = ({ sale, lang, onClose }) => {
         {/* Actions Header */}
         <div className="bg-gray-100 p-3 border-b flex flex-wrap justify-between items-center gap-2 no-print">
           <div className="flex items-center gap-2">
-            <button onClick={onClose} className="text-gray-600 hover:text-red-500 font-medium text-sm">
+            <button
+              data-testid="invoice-close"
+              onClick={onClose}
+              className="text-gray-600 hover:text-red-500 font-medium text-sm"
+            >
               {t.close}
             </button>
             <div className="inline-flex rounded-md shadow-xs bg-gray-200 p-0.5 text-xs">
@@ -294,6 +340,12 @@ const Invoice: React.FC<InvoiceProps> = ({ sale, lang, onClose }) => {
                 {sale.customerPhone && <div>{sale.customerPhone}</div>}
               </div>
             )}
+            {sale.servedBy && (
+              <div className="mt-1 text-xs text-gray-500">
+                {lang === 'bn' ? 'পরিবেশনকারী: ' : 'Served by: '}
+                <span className="font-medium text-gray-700">{sale.servedBy}</span>
+              </div>
+            )}
           </div>
 
           <table className="w-full text-sm mb-4">
@@ -318,9 +370,9 @@ const Invoice: React.FC<InvoiceProps> = ({ sale, lang, onClose }) => {
                     </div>
                   </td>
                   <td className="text-center py-2 align-top text-xs">
-                    {item.quantity} {item.unit || 'pcs'}
+                    {formatQtyWithUnit(item.quantity, item.unit, lang)}
                   </td>
-                  <td className="text-right py-2 align-top">৳{(item.price * item.quantity).toFixed(2)}</td>
+                  <td className="text-right py-2 align-top">৳{fmt(item.price * item.quantity)}</td>
                 </tr>
               ))}
             </tbody>
@@ -329,53 +381,53 @@ const Invoice: React.FC<InvoiceProps> = ({ sale, lang, onClose }) => {
           <div className="border-t-2 border-dashed border-gray-300 pt-3 space-y-2">
             <div className="flex justify-between text-sm text-gray-600">
               <span>{t.subTotal}</span>
-              <span>৳{sale.subTotal?.toFixed(2) || (sale.totalAmount + sale.discount).toFixed(2)}</span>
+              <span>৳{sale.subTotal != null ? fmt(sale.subTotal) : fmt(sale.totalAmount + sale.discount)}</span>
             </div>
 
             {sale.discount > 0 && (
               <div className="flex justify-between text-sm text-gray-600">
                 <span>{t.discount}</span>
-                <span>- ৳{sale.discount.toFixed(2)}</span>
+                <span>- ৳{fmt(sale.discount)}</span>
               </div>
             )}
 
             {sale.vat > 0 && (
               <div className="flex justify-between text-sm text-gray-600">
                 <span>{t.vat}</span>
-                <span>+ ৳{sale.vat.toFixed(2)}</span>
+                <span>+ ৳{fmt(sale.vat)}</span>
               </div>
             )}
 
             <div className="flex justify-between text-lg font-bold text-gray-900 border-t border-gray-100 pt-2">
               <span>{t.total}</span>
-              <span>৳{sale.totalAmount.toFixed(2)}</span>
+              <span>৳{fmt(sale.totalAmount)}</span>
             </div>
 
             <div className="flex justify-between text-sm text-gray-600 pt-2">
               <span>
                 {t.paidAmount} ({sale.paymentMethod || 'cash'})
               </span>
-              <span>৳{sale.paidAmount.toFixed(2)}</span>
+              <span>৳{fmt(sale.paidAmount)}</span>
             </div>
 
             {sale.cashReceived != null && sale.cashReceived > 0 && (
               <div className="flex justify-between text-sm text-gray-600">
                 <span>Cash received</span>
-                <span>৳{sale.cashReceived.toFixed(2)}</span>
+                <span>৳{fmt(sale.cashReceived)}</span>
               </div>
             )}
 
             {sale.dueAmount > 0 && (
               <div className="flex justify-between text-sm text-red-600 font-bold">
                 <span>{t.dueAmount} (REST)</span>
-                <span>৳{sale.dueAmount.toFixed(2)}</span>
+                <span>৳{fmt(sale.dueAmount)}</span>
               </div>
             )}
 
             {changeAmount > 0 && (
               <div className="flex justify-between text-sm text-gray-600">
                 <span>{t.changeAmount}</span>
-                <span>৳{changeAmount.toFixed(2)}</span>
+                <span>৳{fmt(changeAmount)}</span>
               </div>
             )}
           </div>

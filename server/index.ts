@@ -91,6 +91,34 @@ async function main() {
     }
   }
 
+  // Smart QR readiness: the store_code column (migration 0004) and
+  // the nullable guest_orders.table_id (migration 0005) must exist
+  // before store-QR resolution can work on PostgreSQL. Missing
+  // columns do not block boot (reads fall back to the disk store),
+  // but they are loud here so a deploy that skipped migrations is
+  // noticed instead of silently serving empty storefronts.
+  if (bootProbe.connected) {
+    try {
+      const { pool: bootPool } = await import('./db');
+      const cols = await bootPool!.query(
+        `SELECT table_name, column_name, is_nullable FROM information_schema.columns WHERE table_schema = 'public' AND ((table_name = 'users' AND column_name = 'store_code') OR (table_name = 'guest_orders' AND column_name = 'table_id'))`,
+      );
+      const byKey = new Map(cols.rows.map((r: any) => [`${r.table_name}.${r.column_name}`, r.is_nullable]));
+      if (!byKey.has('users.store_code')) {
+        console.warn(
+          '[AmarDokan] WARNING: PostgreSQL is connected but users.store_code is missing. Apply migrations/0004_store_code.sql (node scripts/migrate.mjs) before relying on store QR codes.',
+        );
+      }
+      if (byKey.get('guest_orders.table_id') === 'NO') {
+        console.warn(
+          '[AmarDokan] WARNING: PostgreSQL guest_orders.table_id is still NOT NULL. Apply migrations/0005_pickup_guest_orders.sql (node scripts/migrate.mjs) before relying on store-QR pickup orders.',
+        );
+      }
+    } catch (e: any) {
+      console.warn('[AmarDokan] Store-QR column check failed (continuing on fallback behavior):', e?.message);
+    }
+  }
+
   registerRoutes(app);
 
   // Re-probe on a timer; on reconnect, replay the disk outbox into PostgreSQL.

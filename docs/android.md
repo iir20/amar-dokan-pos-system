@@ -83,12 +83,239 @@ code + build verified only. Before calling printing "working":
 4. Only after steps 2–3 pass may printing be described as verified,
    and only for the tested printer model.
 
-## Signed release builds (GitHub Actions)
+## Native camera barcode scan + native voice (Phase 7, Item 3)
 
-`.github/workflows/android.yml` builds a **signed APK + AAB** whenever
-a `v*` tag is pushed to main, and attaches both to the tag's GitHub
-release. It fails closed when signing secrets are missing — it never
-signs with a debug key.
+The user's core demand — a real native app, not just a web app — failed
+in one visible place: inside the installed app, the barcode scanner
+used only the WebView's `getUserMedia`, which failed with "Camera
+could not be started (permission denied or in use)", and voice had the
+same class of problem (no `SpeechRecognition` in a WebView). Both now
+have a native path first, with the web path kept strictly as fallback.
+
+### Plugins installed (Capacitor 8 shell)
+
+| Plugin                                    | Version              | Used for                                            |
+| ----------------------------------------- | -------------------- | --------------------------------------------------- |
+| `@capacitor/camera`                       | 8.2.6                | Native barcode photo (`takePhoto`)                  |
+| `@capacitor-community/speech-recognition` | 7.0.1                | Native Bangla voice (`start`, system speech dialog) |
+| `@capacitor-community/bluetooth-le`       | 8.3.0 (pre-existing) | Bluetooth printing, unchanged                       |
+
+Wiring proof (no Android SDK in the sandbox, so no Gradle build ran):
+`npx cap sync android` reports "Found 3 Capacitor plugins for
+android" and `android/capacitor.settings.gradle` now includes
+`:capacitor-community-speech-recognition` and `:capacitor-camera`
+alongside bluetooth-le. No `MainActivity` edit was needed — Capacitor
+8 auto-registers plugins from that file.
+
+Deliberately NOT installed: `@capacitor-community/barcode-scanner`
+(live viewfinder scanning). Its latest release only supports
+Capacitor 5, not this project's Capacitor 8. The native scan is
+therefore **photo-based, not a live viewfinder**: the owner taps
+"Scan with camera", the system camera opens, they photograph the
+label filling the frame, and the same ZXing engine decodes the photo
+(`components/BarcodeScanner.tsx`). A live-preview upgrade needs a
+Capacitor-8-compatible scanner plugin (or ML Kit wiring) and is a
+separate commission — it must not be claimed as shipped.
+
+### Permissions — manifest + runtime flow
+
+Full permission system (table, state machine, Settings deep link, owner checklist): see
+`docs/android-permissions.md`. The summary below is unchanged; the new module `services/permissions.ts` is the
+point-of-use gate the coordinator wires into the Scan / voice / Bluetooth Print tap handlers.
+
+`android/app/src/main/AndroidManifest.xml` declares (in addition to
+the pre-existing `INTERNET`):
+
+- `android.permission.CAMERA`
+- `android.permission.RECORD_AUDIO` (the speech plugin also declares
+  this in its own manifest; the app-manifest entry is the same
+  permission, made explicit)
+- `android.hardware.camera` and `android.hardware.microphone` with
+  `required="false"`, so the app still installs and works (manual
+  barcode entry + typed commands) on devices without a camera/mic.
+
+Runtime flow (services/native.ts, request on first use only — nothing
+is requested at app start):
+
+1. Tapping Scan / Speak first calls `checkPermissions()`. If already
+   granted, no prompt appears.
+2. If never asked (or denied once but still askable), one
+   `requestPermissions()` system dialog appears.
+3. If still denied, the system will not re-prompt: the code does NOT
+   loop requests. It shows the exact Settings path and the fallback,
+   with a Retry button that re-checks (so returning from Settings
+   picks the new grant up).
+
+### Fallback chains (every action ends in manual/text entry)
+
+Barcode (`components/BarcodeScanner.tsx`):
+native Camera photo + ZXing decode → web ZXing live video →
+manual Barcode box above the panel (type code + Look up).
+Voice (`services/voice.ts` `listenOnce`): native speech plugin →
+Web Speech API → typed command input in VoicePos / VoiceInventory.
+Voice synthesis (`speakBangla`) is unchanged Web Speech TTS.
+
+### Fixed error path — no more generic dead end
+
+The old panel collapsed every camera failure into "Camera could not
+be started (permission denied or in use)". Failures are now
+classified (`classifyCameraError`) and each panel says what happened,
+what to do, and the manual fallback:
+
+- **Denied (device):** "open Android Settings → Apps → Amar Dokan POS
+  → Permissions → Camera, turn it on, then come back and tap Retry"
+  - manual entry. (`data-testid="barcode-scanner-permission-denied"`)
+- **Denied (web):** browser site settings for the page → Camera →
+  Allow, then Retry.
+- **In use:** close the other app using the camera, then Retry.
+- **No camera / unavailable / cancelled / photo with no barcode:**
+  each has its own panel with Retake/Retry or the manual entry.
+- Voice denial: the existing VoicePos / VoiceInventory panels fall
+  back to "Could not hear you — please type it" with the always-
+  visible text input (the mic Settings path,
+  Settings → Apps → Amar Dokan POS → Permissions → Microphone, is in
+  `MIC_SETTINGS_GUIDANCE` and in this doc; showing it inline in those
+  two panels would need edits outside this item's file ownership, so
+  it is flagged for the coordinator rather than smuggled in).
+
+### On-device camera + voice checklist (UNVERIFIED — must be run by the owner)
+
+No phone, camera, microphone, Android SDK, or Google speech service
+exists in this sandbox, so **nothing in this section is verified
+on-device and must not be described as working until this checklist
+passes**. Install a debug APK (`npm run cap:sync` +
+`./gradlew assembleDebug` in `android/`) or the signed release APK
+below, then:
+
+1. First-use camera: tap "Scan with camera" — confirm ONE system
+   camera-permission dialog appears (not at app start), Allow leads
+   to the system camera, and a framed label photo decodes to the
+   product (confirm with a real printed barcode, in shop lighting).
+2. Camera denied: Deny the dialog, then Deny again (permanent
+   denial) — confirm the panel shows the exact Settings → Apps →
+   Amar Dokan POS → Permissions → Camera path, no re-prompt loop,
+   and the manual Barcode box above still looks the product up.
+3. Camera denied then fixed: follow the Settings path, turn Camera
+   on, return, tap Retry — confirm scanning works without
+   reinstalling.
+4. Camera in use: open another camera app first, then Scan — confirm
+   the in-use panel (not the old generic error), then closing the
+   other app + Retry recovers.
+5. Photo with no barcode: photograph a blank surface — confirm the
+   "no barcode found, retake" panel, not a hang or crash.
+6. First-use voice: tap the voice listen button in POS and in
+   Inventory — confirm ONE microphone-permission dialog, then the
+   system speech dialog, and a Bangla command ("চাল খুঁজুন") acts
+   correctly. Repeat on a low-end phone: Bangla recognition accuracy
+   there is specifically unverified.
+7. Voice denied / no Google speech service: Deny the mic dialog (or
+   test on a device without Google speech services) — confirm the
+   typed command input still performs the same action, with no hang
+   on a listening spinner.
+8. No-camera / no-mic device (or permissions revoked in Settings):
+   confirm the app still installs, opens, and sells using manual
+   barcode entry + typed commands alone.
+9. Only after steps 1–8 pass may native camera/voice be described as
+   verified, and only for the tested device model + Android version.
+
+## Signed release builds (GitHub Actions) — push-only + versioned tags
+
+`.github/workflows/android.yml` builds a **signed APK + AAB** on every
+push to `main` and on every `v*` tag push:
+
+- **Push to `main` (push-only, no tag needed):** the workflow moves
+  the rolling `latest` tag to the pushed commit and attaches the fresh
+  APK + AAB to the **"Latest (main)"** release (tag `latest`,
+  `make_latest: false` so versioned releases stay GitHub's "latest").
+  Installers who want the freshest main build download from there.
+- **Push of a `v*` tag (e.g. v1.2.0):** the same signed build is
+  attached to that version's release, as before. Tag releases keep
+  working alongside the rolling release.
+- **Manual runs** (`workflow_dispatch`) build and upload artifacts
+  only; a release is created only on main or a `v*` tag run.
+
+It fails closed when signing secrets are missing — it never signs
+with a debug key and never ships a debug-signed APK as a release.
+
+### Backend connection (native app) — read this before the first release
+
+The installed app is loaded from local assets, so the old relative
+`/api` base cannot reach any backend from inside the WebView. The
+resolution order in `services/api.ts` is:
+
+1. **Settings override** — Settings → Server address (persisted in
+   `localStorage` as `amar-api-base-override`). This wins over
+   everything and applies without a rebuild or restart.
+2. **Build-time default** — the `VITE_API_BASE_URL` repository
+   **variable** (Settings → Secrets and variables → Actions →
+   Variables; it is a public URL, not a secret). The Android workflow
+   passes it into the Capacitor build, where Vite bakes it in as the
+   native default backend origin. Set it to the Render backend URL
+   before the first push-only release.
+3. **Relative `/api`** — web builds served by the same server only.
+
+No backend URL is hardcoded anywhere in the repo, and no localhost
+or dev URL is ever baked into a release build: the repo contains no
+verified production URL, so inventing one would ship a broken
+release. **The CI must set `VITE_API_BASE_URL` to the Render backend
+URL before the first push-only release.** If it is unset, the workflow
+only warns — but the installed app then fails VISIBLY at login with
+"Server address is not configured" (Settings → Server address names
+the fix) instead of failing mysteriously. A backend that cannot be
+reached at all surfaces a distinct "Backend unreachable" error,
+separate from wrong credentials (401).
+
+On-device connection checklist (UNVERIFIED — must be run by the owner):
+
+1. Install the `latest` (or a tag) APK on a real Android phone.
+2. With `VITE_API_BASE_URL` set in CI, log in — it must reach the
+   Render backend with no server-address error.
+3. Clear the variable once (or install a build made without it) and
+   confirm the app shows the missing-server-address error at login
+   instead of a generic failure; then enter the backend URL in
+   Settings → Server address and confirm login works with the
+   override alone.
+4. With the phone offline / the backend stopped, confirm login and
+   storefront loads show the backend-unreachable message, not a
+   wrong-credentials error.
+
+## Per-store Smart QR (storefront)
+
+- **Owner screen:** Profile → Store QR (owner only). The QR encodes
+  `<origin>/s/<storeCode>` and is rendered locally with the
+  already-installed `@zxing/browser` QR writer — no third-party QR
+  service sees the URL. Copy, Share (system share sheet, clipboard
+  fallback) and Print (a print window with the code, store name and
+  link) are on the same screen.
+- **Code:** `users.store_code`, a 16-hex-char random code minted at
+  store creation and backfilled for legacy stores (migration
+  `0004_store_code.sql`; `POST /api/store-qr` ensures it for the
+  calling owner). It is a public handle, not a secret — but it is
+  random, never the internal store id, so stores cannot be enumerated
+  from each other's codes.
+- **Public storefront:** `GET /api/public/store/code/:code` (info)
+  and `.../menu` (products) resolve the code to exactly one store.
+  An unknown code answers `STORE_NOT_FOUND` — never another store,
+  never a list. The store view exposes only public fields (name,
+  category, address/phone/location, photo); the menu strips cost and
+  hides non-online items. Guest ordering from the storefront is a
+  **pickup order through the existing guest-order pipeline**
+  (`POST /api/public/guest-orders` with `storeCode`, migration
+  `0005_pickup_guest_orders.sql` making `guest_orders.table_id`
+  nullable): same KDS queue, lifecycle and settlement, totals
+  recomputed server-side from that store's prices, items from another
+  store rejected. The KDS shows pickup orders as "Pickup".
+- **Scan entry (inside the app):** Store QR → Scan a store QR reuses
+  the BarcodeScanner chain (native photo, then web ZXing live video,
+  then manual entry); `@zxing/browser` already decodes QR codes.
+  Scanned text that is not a `/s/<code>` URL shows "not a store QR"
+  and opens no store. A successful scan shows the storefront embedded
+  in the app; the full `/s/<code>` link opens in a browser.
+- **Offline:** opening a store QR without a connection shows the
+  offline panel with Retry — never a broken or wrong store view.
+- **Migrations required before relying on this on PostgreSQL:**
+  `node scripts/migrate.mjs` (applies 0004 + 0005); the server logs a
+  boot warning while either is missing.
 
 ### Keystore setup checklist (owner, one time)
 
@@ -121,5 +348,26 @@ in the repo, never in `.env`, never in chat:
   Capacitor build proof (`cap sync` + web build). The first signed
   artifact must come from the workflow run in step 4 above.
 - **Bluetooth printing is UNVERIFIED on a real device** (see checklist).
+- **Native camera barcode scan and native voice are UNVERIFIED on a
+  real device** (see the Phase 7 checklist above): no device install,
+  no real camera/mic test, no Bangla voice-accuracy test, and no
+  permission-dialog test has run anywhere. The sandbox evidence is
+  plugin installation + `cap sync` registration + `tsc --noEmit`
+  clean + 6/6 unit tests for classification/guidance/web-fallback
+  only.
 - **No Play Store listing exists** from this work; the AAB is the
   upload artifact for a listing the owner creates separately.
+- **Push-only release runner execution is UNVERIFIED**: the workflow
+  YAML parses and its release logic (main → rolling `latest`, tag →
+  versioned release, secrets fail-closed) reads correctly, but no
+  GitHub runner has executed it in this environment. The first main
+  push must be watched: confirm the `latest` tag moves, the "Latest
+  (main)" release gains the APK + AAB, and a tag push still creates
+  its own versioned release.
+- **Real-device store-QR scan and real-device backend connection are
+  UNVERIFIED** (see the checklists above): no phone, camera or
+  backend install exists in this environment. The sandbox evidence is
+  unit tests (URL parsing, code boundaries, API-base resolution) +
+  fallback-store E2E (storefront load, pickup order, unknown code)
+  only. PostgreSQL-path proof for the new store-code/pickup code is
+  likewise UNVERIFIED until the PG E2E suite runs against it.
