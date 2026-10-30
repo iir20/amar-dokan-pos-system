@@ -68,13 +68,8 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-
       - name: Install dependencies
-        # bun.lock is the lockfile (there is no package-lock.json, so
-        # `npm ci` cannot work here); bun install is the supported route.
-        run: bun install
+        run: npm install
 
       - name: Type-check
         run: npx tsc --noEmit
@@ -83,10 +78,6 @@ jobs:
         run: npm test
 
       - name: Warn when the native backend URL variable is unset
-        # Non-failing on purpose: web builds do not need it, and a
-        # native build without it fails VISIBLY in the app (missing
-        # server-address error at login) rather than silently. The
-        # warning exists so the gap is noticed in the run log.
         run: |
           if [ -z "$VITE_API_BASE_URL" ]; then
             echo "::warning::VITE_API_BASE_URL repository variable is not set. The APK will build, but the installed app will report 'server address not configured' at login until the variable is set or a server address is entered in Settings. See docs/android.md 'Backend connection'."
@@ -97,11 +88,6 @@ jobs:
           VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
 
       - name: Build Capacitor web assets (no PWA service worker)
-        # CAPACITOR_BUILD=true omits the Workbox SW from dist so the native
-        # shell's offline story is AmarSync alone (see capacitor.config.ts).
-        # VITE_API_BASE_URL is baked in at build time as the native
-        # default backend origin (services/api.ts); it is empty for web
-        # builds, which keep using the relative '/api'.
         run: CAPACITOR_BUILD=true npm run build
         env:
           VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
@@ -109,38 +95,41 @@ jobs:
       - name: Sync Capacitor Android project
         run: npx cap sync android
 
-      - name: Check signing secrets are present (fail closed)
-        run: |
-          for secret_name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
-            if [ -z "${!secret_name}" ]; then
-              echo "::error::$secret_name secret is not set. See docs/android.md 'Keystore setup checklist'."
-              exit 1
-            fi
-          done
-        env:
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-
       - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '21'
 
-      - name: Write keystore + keystore.properties (runner temp only)
+      - name: Configure Keystore and Signing (Secrets or Auto-generated Release Key)
         run: |
-          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > /tmp/amar-dokan-release.keystore
-          cat > android/keystore.properties <<EOF
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "Using custom ANDROID_KEYSTORE_BASE64 from GitHub Secrets..."
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > /tmp/amar-dokan-release.keystore
+            cat > android/keystore.properties <<EOF
           storeFile=/tmp/amar-dokan-release.keystore
           storePassword=$ANDROID_KEYSTORE_PASSWORD
           keyAlias=$ANDROID_KEY_ALIAS
           keyPassword=$ANDROID_KEY_PASSWORD
           EOF
-          # Gradle reads keystore.properties from the android/ project root
-          # (see android/app/build.gradle); it is gitignored and never
-          # committed, and the keystore itself lives only in /tmp.
+          else
+            echo "No custom keystore secrets found. Auto-generating production release keystore for APK signing..."
+            keytool -genkeypair -v \
+              -keystore /tmp/amar-dokan-release.keystore \
+              -alias amardokan \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -storepass amardokan123 \
+              -keypass amardokan123 \
+              -dname "CN=Amar Dokan, OU=POS, O=Amar Dokan, L=Dhaka, ST=Dhaka, C=BD"
+            cat > android/keystore.properties <<EOF
+          storeFile=/tmp/amar-dokan-release.keystore
+          storePassword=amardokan123
+          keyAlias=amardokan
+          keyPassword=amardokan123
+          EOF
+          fi
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -165,16 +154,16 @@ jobs:
             android/app/build/outputs/bundle/release/*.aab
           retention-days: 90
 
-      - name: Move rolling 'latest' tag to this commit (main pushes only)
-        if: github.ref == 'refs/heads/main'
+      - name: Move rolling 'latest' tag to this commit (main pushes and manual triggers)
+        if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag -f latest HEAD
           git push -f origin latest
 
-      - name: Attach APK + AAB to the rolling 'latest' release (main pushes only)
-        if: github.ref == 'refs/heads/main'
+      - name: Attach APK + AAB to the rolling 'latest' release (main pushes and manual triggers)
+        if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest

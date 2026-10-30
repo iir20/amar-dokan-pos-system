@@ -98,7 +98,7 @@ const VoicePos: React.FC<Props> = ({ lang, cart, total, change, onVoiceAdd, onVo
       <div className="flex flex-wrap gap-2">
         <button
           data-testid="voice-speak-total"
-          className="bg-emerald-600 text-white px-3 py-2 rounded-lg text-sm font-bold"
+          className="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-2 rounded-lg text-sm font-bold shadow-sm transition-all hover:scale-[1.02] active:scale-[0.97]"
           onClick={() => {
             const { text } = speakTotal(total, change);
             setLastSpoken(text);
@@ -108,7 +108,7 @@ const VoicePos: React.FC<Props> = ({ lang, cart, total, change, onVoiceAdd, onVo
         </button>
         <button
           data-testid="voice-speak-cart"
-          className="bg-white border px-3 py-2 rounded-lg text-sm font-bold"
+          className="bg-white hover:bg-gray-50 border px-3 py-2 rounded-lg text-sm font-bold shadow-sm transition-all hover:scale-[1.02] active:scale-[0.97]"
           onClick={() => {
             if (cart.length === 0) {
               setLastSpoken(lang === 'bn' ? 'কার্ট খালি।' : 'Cart is empty.');
@@ -124,11 +124,25 @@ const VoicePos: React.FC<Props> = ({ lang, cart, total, change, onVoiceAdd, onVo
         <button
           data-testid="voice-listen"
           disabled={!recognitionSupported || listening}
-          className="bg-white border px-3 py-2 rounded-lg text-sm font-bold disabled:opacity-50"
+          className={`border px-3 py-2 rounded-lg text-sm font-bold transition-all hover:scale-[1.02] active:scale-[0.97] disabled:opacity-50 ${
+            listening
+              ? 'bg-emerald-600 text-white animate-pulse shadow-md shadow-emerald-200'
+              : 'bg-white hover:bg-gray-50'
+          }`}
           onClick={() => void handleListen()}
         >
           🎤 {listening ? (lang === 'bn' ? 'শুনছি…' : 'Listening…') : t.voiceInput}
         </button>
+        {listening && (
+          <div className="flex items-center gap-1 px-3 py-1.5 bg-emerald-100 rounded-full border border-emerald-300 animate-slide-up-fade">
+            <span className="w-1.5 h-3 bg-emerald-600 rounded-full animate-bounce [animation-delay:-0.3s]"></span>
+            <span className="w-1.5 h-4 bg-emerald-600 rounded-full animate-bounce [animation-delay:-0.15s]"></span>
+            <span className="w-1.5 h-2 bg-emerald-600 rounded-full animate-bounce"></span>
+            <span className="text-xs font-semibold text-emerald-800 ml-1">
+              {lang === 'bn' ? 'কথা বলুন…' : 'Listening…'}
+            </span>
+          </div>
+        )}
       </div>
       {/* Text fallback for voice input — always visible and tappable. */}
       <form

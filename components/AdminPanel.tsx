@@ -12,7 +12,7 @@ import { getSyncSummary, subscribeToSync, retryFailedOutbox, flushOutbox } from 
 import { toCents, fromCents } from '../utils/currency';
 
 const AdminPanel: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'overview' | 'requests' | 'users' | 'branches' | 'sales' | 'settings' | 'system' | 'status' | 'announcements'>('requests');
+  const [activeTab, setActiveTab] = useState<'overview' | 'requests' | 'users' | 'branches' | 'sales' | 'settings' | 'system' | 'status' | 'announcements'>('overview');
   const [processingId, setProcessingId] = useState<string | null>(null);
   
   // Realtime Data
@@ -444,47 +444,47 @@ const AdminPanel: React.FC = () => {
 
       {/* Stats Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6 mb-6 md:mb-8">
-          <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 flex items-center gap-4">
+          <div className="bg-white p-4 rounded-xl shadow-xs border border-slate-200 flex items-center gap-4 transition-all duration-200 hover:shadow-md hover:-translate-y-0.5">
               <div className="bg-blue-100 p-3 rounded-full text-blue-600 shrink-0"><Store size={24} /></div>
               <div>
-                  <p className="text-xs text-slate-500 uppercase font-bold">Total Stores</p>
-                  <p className="text-2xl font-bold">{users.length}</p>
+                  <p className="text-xs text-slate-500 uppercase font-bold tracking-wide">Total Stores</p>
+                  <p className="text-2xl font-black text-slate-800">{users.length}</p>
               </div>
           </div>
-          <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 flex items-center gap-4">
+          <div className="bg-white p-4 rounded-xl shadow-xs border border-slate-200 flex items-center gap-4 transition-all duration-200 hover:shadow-md hover:-translate-y-0.5">
               <div className="bg-orange-100 p-3 rounded-full text-orange-600 shrink-0"><Calendar size={24} /></div>
               <div>
-                  <p className="text-xs text-slate-500 uppercase font-bold">Pending Requests</p>
-                  <p className="text-2xl font-bold">{requests.filter(r => r.status === 'pending').length}</p>
+                  <p className="text-xs text-slate-500 uppercase font-bold tracking-wide">Pending Requests</p>
+                  <p className="text-2xl font-black text-slate-800">{requests.filter(r => r.status === 'pending').length}</p>
               </div>
           </div>
-          <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 flex items-center gap-4">
+          <div className="bg-white p-4 rounded-xl shadow-xs border border-slate-200 flex items-center gap-4 transition-all duration-200 hover:shadow-md hover:-translate-y-0.5">
               <div className="bg-green-100 p-3 rounded-full text-green-600 shrink-0"><DollarSign size={24} /></div>
               <div>
-                  <p className="text-xs text-slate-500 uppercase font-bold">Sub Revenue</p>
-                  <p className="text-2xl font-bold">৳{requests.filter(r => r.status === 'approved').reduce((acc, r) => acc + r.amount, 0).toLocaleString()}</p>
+                  <p className="text-xs text-slate-500 uppercase font-bold tracking-wide">Sub Revenue</p>
+                  <p className="text-2xl font-black text-slate-800">৳{requests.filter(r => r.status === 'approved').reduce((acc, r) => acc + r.amount, 0).toLocaleString()}</p>
               </div>
           </div>
-          <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 flex items-center gap-4">
+          <div className="bg-white p-4 rounded-xl shadow-xs border border-slate-200 flex items-center gap-4 transition-all duration-200 hover:shadow-md hover:-translate-y-0.5">
               <div className="bg-purple-100 p-3 rounded-full text-purple-600 shrink-0"><CreditCard size={24} /></div>
               <div>
-                  <p className="text-xs text-slate-500 uppercase font-bold">Total Store Sales</p>
-                  <p className="text-2xl font-bold">৳{sales.reduce((acc, s) => acc + s.totalAmount, 0).toLocaleString()}</p>
+                  <p className="text-xs text-slate-500 uppercase font-bold tracking-wide">Total Store Sales</p>
+                  <p className="text-2xl font-black text-slate-800">৳{sales.reduce((acc, s) => acc + s.totalAmount, 0).toLocaleString()}</p>
               </div>
           </div>
       </div>
 
       {/* Navigation Tabs */}
-      <div className="flex gap-4 mb-6 border-b border-slate-200 overflow-x-auto no-scrollbar pb-1">
-          <button data-testid="admin-tab-overview" onClick={() => setActiveTab('overview')} className={`pb-2 px-4 font-medium transition whitespace-nowrap ${activeTab === 'overview' ? 'border-b-2 border-slate-800 text-slate-800' : 'text-slate-500'}`}>সারসংক্ষেপ / Overview</button>
-          <button onClick={() => setActiveTab('requests')} className={`pb-2 px-4 font-medium transition whitespace-nowrap ${activeTab === 'requests' ? 'border-b-2 border-slate-800 text-slate-800' : 'text-slate-500'}`}>Subscription Requests</button>
-          <button onClick={() => setActiveTab('users')} className={`pb-2 px-4 font-medium transition whitespace-nowrap ${activeTab === 'users' ? 'border-b-2 border-slate-800 text-slate-800' : 'text-slate-500'}`}>Registered Users</button>
-          <button data-testid="admin-tab-branches" onClick={() => setActiveTab('branches')} className={`pb-2 px-4 font-medium transition whitespace-nowrap ${activeTab === 'branches' ? 'border-b-2 border-slate-800 text-slate-800' : 'text-slate-500'}`}>শাখা / Branches</button>
-          <button onClick={() => setActiveTab('sales')} className={`pb-2 px-4 font-medium transition whitespace-nowrap ${activeTab === 'sales' ? 'border-b-2 border-slate-800 text-slate-800' : 'text-slate-500'}`}>Sales Analysis</button>
-          <button onClick={() => setActiveTab('settings')} className={`pb-2 px-4 font-medium transition whitespace-nowrap flex items-center gap-2 ${activeTab === 'settings' ? 'border-b-2 border-slate-800 text-slate-800' : 'text-slate-500'}`}><SettingsIcon size={16} /> Pricing</button>
-          <button onClick={() => setActiveTab('system')} className={`pb-2 px-4 font-medium transition whitespace-nowrap flex items-center gap-2 ${activeTab === 'system' ? 'border-b-2 border-slate-800 text-slate-800' : 'text-slate-500'}`}><Store size={16} /> Branding</button>
-          <button data-testid="admin-tab-status" onClick={() => setActiveTab('status')} className={`pb-2 px-4 font-medium transition whitespace-nowrap ${activeTab === 'status' ? 'border-b-2 border-slate-800 text-slate-800' : 'text-slate-500'}`}>System Status</button>
-          <button onClick={() => setActiveTab('announcements')} className={`pb-2 px-4 font-medium transition whitespace-nowrap flex items-center gap-2 ${activeTab === 'announcements' ? 'border-b-2 border-slate-800 text-slate-800' : 'text-slate-500'}`}><Megaphone size={16} /> Notices</button>
+      <div className="flex gap-2 mb-6 border-b border-slate-200 overflow-x-auto no-scrollbar pb-1">
+          <button data-testid="admin-tab-overview" onClick={() => setActiveTab('overview')} className={`pb-2.5 px-4 font-semibold text-sm transition-all whitespace-nowrap ${activeTab === 'overview' ? 'border-b-2 border-emerald-600 text-emerald-700' : 'text-slate-500 hover:text-slate-800'}`}>সারসংক্ষেপ / Overview</button>
+          <button onClick={() => setActiveTab('requests')} className={`pb-2.5 px-4 font-semibold text-sm transition-all whitespace-nowrap ${activeTab === 'requests' ? 'border-b-2 border-emerald-600 text-emerald-700' : 'text-slate-500 hover:text-slate-800'}`}>Subscription Requests</button>
+          <button onClick={() => setActiveTab('users')} className={`pb-2.5 px-4 font-semibold text-sm transition-all whitespace-nowrap ${activeTab === 'users' ? 'border-b-2 border-emerald-600 text-emerald-700' : 'text-slate-500 hover:text-slate-800'}`}>Registered Users</button>
+          <button data-testid="admin-tab-branches" onClick={() => setActiveTab('branches')} className={`pb-2.5 px-4 font-semibold text-sm transition-all whitespace-nowrap ${activeTab === 'branches' ? 'border-b-2 border-emerald-600 text-emerald-700' : 'text-slate-500 hover:text-slate-800'}`}>শাখা / Branches</button>
+          <button onClick={() => setActiveTab('sales')} className={`pb-2.5 px-4 font-semibold text-sm transition-all whitespace-nowrap ${activeTab === 'sales' ? 'border-b-2 border-emerald-600 text-emerald-700' : 'text-slate-500 hover:text-slate-800'}`}>Sales Analysis</button>
+          <button onClick={() => setActiveTab('settings')} className={`pb-2.5 px-4 font-semibold text-sm transition-all whitespace-nowrap flex items-center gap-2 ${activeTab === 'settings' ? 'border-b-2 border-emerald-600 text-emerald-700' : 'text-slate-500 hover:text-slate-800'}`}><SettingsIcon size={16} /> Pricing</button>
+          <button onClick={() => setActiveTab('system')} className={`pb-2.5 px-4 font-semibold text-sm transition-all whitespace-nowrap flex items-center gap-2 ${activeTab === 'system' ? 'border-b-2 border-emerald-600 text-emerald-700' : 'text-slate-500 hover:text-slate-800'}`}><Store size={16} /> Branding</button>
+          <button data-testid="admin-tab-status" onClick={() => setActiveTab('status')} className={`pb-2.5 px-4 font-semibold text-sm transition-all whitespace-nowrap ${activeTab === 'status' ? 'border-b-2 border-emerald-600 text-emerald-700' : 'text-slate-500 hover:text-slate-800'}`}>System Status</button>
+          <button onClick={() => setActiveTab('announcements')} className={`pb-2.5 px-4 font-semibold text-sm transition-all whitespace-nowrap flex items-center gap-2 ${activeTab === 'announcements' ? 'border-b-2 border-emerald-600 text-emerald-700' : 'text-slate-500 hover:text-slate-800'}`}><Megaphone size={16} /> Notices</button>
       </div>
 
       {/* Tab Content */}

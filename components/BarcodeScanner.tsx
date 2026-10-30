@@ -134,7 +134,18 @@ const BarcodeScanner: React.FC<Props> = ({ onDetected, onClose }) => {
       }
       try {
         const reader = new BrowserMultiFormatReader();
-        const controls = await reader.decodeFromVideoDevice(undefined, videoRef.current!, (result, err) => {
+        let selectedDeviceId: string | undefined;
+        try {
+          const videoInputDevices = await BrowserMultiFormatReader.listVideoInputDevices();
+          if (videoInputDevices && videoInputDevices.length > 0) {
+            const backCamera =
+              videoInputDevices.find((device) => /back|rear|environment/i.test(device.label)) ||
+              videoInputDevices[videoInputDevices.length - 1];
+            selectedDeviceId = backCamera?.deviceId;
+          }
+        } catch {}
+
+        const controls = await reader.decodeFromVideoDevice(selectedDeviceId, videoRef.current!, (result, err) => {
           if (cancelled) return;
           if (result) {
             const code = result.getText().trim();
@@ -284,6 +295,46 @@ const BarcodeScanner: React.FC<Props> = ({ onDetected, onClose }) => {
             : 'Processing photo…'}
         </p>
       )}
+      <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-gray-100">
+        <label className="cursor-pointer inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-emerald-50 text-emerald-700 hover:bg-emerald-100 active:scale-95 border border-emerald-200 rounded-lg transition-all shadow-sm">
+          <span>📷 Snap / Upload Barcode Image</span>
+          <input
+            type="file"
+            accept="image/*"
+            capture="environment"
+            className="hidden"
+            onChange={async (e) => {
+              const file = e.target.files?.[0];
+              if (!file) return;
+              try {
+                setStarting(true);
+                const reader = new FileReader();
+                reader.onload = async (event) => {
+                  const src = event.target?.result as string;
+                  if (!src) return;
+                  try {
+                    const code = await decodePhoto(src);
+                    if (code) {
+                      onDetected(code);
+                    } else {
+                      setError('NO_BARCODE_IN_PHOTO');
+                    }
+                  } catch {
+                    setError('NO_BARCODE_IN_PHOTO');
+                  } finally {
+                    setStarting(false);
+                  }
+                };
+                reader.readAsDataURL(file);
+              } catch {
+                setError('NO_BARCODE_IN_PHOTO');
+                setStarting(false);
+              }
+            }}
+          />
+        </label>
+        <p className="text-[11px] text-gray-500">Or type the printed code in the Barcode box above.</p>
+      </div>
       <p className="text-[11px] text-gray-500">
         No camera? Type the printed code in the Barcode box above and tap Look up — scanning never blocks a lookup.
       </p>

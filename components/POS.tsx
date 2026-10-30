@@ -543,7 +543,7 @@ const POS: React.FC<POSProps> = ({ lang, onCheckout }) => {
                     addToCart(product);
                   }
                 }}
-                className={`bg-white rounded-xl shadow-sm border border-gray-100 p-3 md:p-4 cursor-pointer hover:shadow-md hover:border-emerald-200 transition group flex flex-col justify-between min-h-[120px] relative ${product.stock === 0 ? 'opacity-50 pointer-events-none' : ''}`}
+                className={`bg-white rounded-xl shadow-sm border border-gray-100 p-3 md:p-4 cursor-pointer ad-card-interactive transition-all duration-200 group flex flex-col justify-between min-h-[120px] relative hover:border-emerald-300 hover:shadow-md ${product.stock === 0 ? 'opacity-50 pointer-events-none' : ''}`}
               >
                 {/* Expiry Warning Overlay (Medicine Only) */}
                 {user?.storeCategory === 'medicine' &&
@@ -703,7 +703,7 @@ const POS: React.FC<POSProps> = ({ lang, onCheckout }) => {
             cart.map((item) => (
               <div
                 key={item.id}
-                className="flex items-center gap-2 bg-white border border-gray-100 p-2 rounded-lg shadow-sm"
+                className="flex items-center gap-2 bg-white border border-gray-100 p-2 rounded-xl shadow-sm animate-slide-up-fade transition-all hover:shadow-md hover:border-emerald-100"
               >
                 <div className="flex-1 min-w-0">
                   <h4 className="font-medium text-gray-800 text-sm truncate">

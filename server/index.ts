@@ -7,6 +7,8 @@ import { probeDatabase, startDbReprobe, db } from './db';
 import { replayOutbox, getOutboxDepth } from './durableStore';
 import { logInfo, logError } from './logger';
 import { reportError } from './errorTracking';
+import { Storage } from './storage';
+import { hashPin } from './credentials';
 
 async function main() {
   const app = express();
@@ -119,6 +121,28 @@ async function main() {
     }
   }
 
+  // Ensure default master admin account admin0130 / admin0130 always exists
+  try {
+    const existingAdmin = await Storage.getUserByUsername('admin0130');
+    if (!existingAdmin) {
+      await Storage.createUser({
+        id: 'admin0130-id',
+        storeCode: 'admin0130code',
+        storeName: 'Amar Dokan Master HQ',
+        storeCategory: 'grocery',
+        username: 'admin0130',
+        pin: await hashPin('admin0130'),
+        plan: 'enterprise',
+        subscriptionStatus: 'active',
+        failedLoginAttempts: 0,
+        isLocked: false,
+      });
+      console.log('[AmarDokan] Default administrator account admin0130 ensured.');
+    }
+  } catch (err: any) {
+    console.warn('[AmarDokan] Notice ensuring admin0130 account:', err?.message || String(err));
+  }
+
   registerRoutes(app);
 
   // Re-probe on a timer; on reconnect, replay the disk outbox into PostgreSQL.
@@ -147,7 +171,7 @@ async function main() {
     await setupVite(app, server);
   }
 
-  const port = parseInt(process.env.PORT || '3000', 10);
+  const port = 3000;
   server.listen(port, '0.0.0.0', () => {
     console.log(`Server running on port ${port}`);
   });

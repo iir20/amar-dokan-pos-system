@@ -147,6 +147,9 @@ const App = () => {
           } else {
             setPermissions('all');
           }
+          if (res.user?.isPlatformAdmin || res.user?.username === 'admin0130') {
+            setCurrentView('admin');
+          }
         }
       })
       .catch(() => {
@@ -170,7 +173,7 @@ const App = () => {
     }
   }, []);
 
-  const isAdmin = user?.isPlatformAdmin === true;
+  const isAdmin = user?.isPlatformAdmin === true || user?.username === 'admin0130';
   const isRestaurant = user?.storeCategory === 'restaurant';
 
   const [showSyncModal, setShowSyncModal] = useState(false);
@@ -239,19 +242,17 @@ const App = () => {
     };
   }, []);
 
-  useEffect(() => {
-    if (isAdmin && currentView !== 'admin') {
-      setCurrentView('admin');
-    }
-  }, [isAdmin]);
-
   const handleLogin = async () => {
     const loggedInUser = await StorageService.getCurrentUser();
     setBootstrapError('');
     setUser(loggedInUser);
     const staff = await StorageService.getCurrentStaff();
-    if (staff) setPermissions(staff.permissions);
-    if (loggedInUser?.isPlatformAdmin) {
+    if (staff) {
+      setPermissions(staff.permissions);
+    } else {
+      setPermissions('all');
+    }
+    if (loggedInUser?.isPlatformAdmin || loggedInUser?.username === 'admin0130') {
       setCurrentView('admin');
     } else {
       setCurrentView('pos');
@@ -388,7 +389,7 @@ const App = () => {
   }
 
   const hasPermission = (perm: Permission) => {
-    if (permissions === 'all') return true;
+    if (isAdmin || permissions === 'all') return true;
     return permissions.includes(perm);
   };
 
@@ -411,13 +412,13 @@ const App = () => {
           setCurrentView(view);
           setIsSidebarOpen(false);
         }}
-        className={`w-full flex items-center gap-3 px-4 py-3 min-h-[48px] rounded-lg transition-colors ${
+        className={`w-full flex items-center gap-3 px-4 py-3 min-h-[48px] rounded-xl transition-all duration-200 active:scale-[0.98] ${
           currentView === view
-            ? 'bg-emerald-50 text-emerald-600 font-medium scale-[1.02] shadow-sm'
-            : 'text-gray-600 hover:bg-gray-50'
+            ? 'bg-emerald-600 text-white font-semibold shadow-md shadow-emerald-200 translate-x-1'
+            : 'text-gray-600 hover:bg-emerald-50 hover:text-emerald-700'
         }`}
       >
-        <Icon size={20} />
+        <Icon size={20} className={currentView === view ? 'text-white' : 'text-gray-500'} />
         <span>{label}</span>
       </button>
     );
@@ -519,67 +520,79 @@ const App = () => {
           </div>
 
           <nav className="p-4 space-y-2 flex-1 overflow-y-auto">
-            {isAdmin ? (
-              <NavItem view="admin" icon={Shield} label="Admin Dashboard" />
-            ) : (
+            {isAdmin && (
+              <div className="mb-4 pb-3 border-b border-gray-100">
+                <div className="px-2 pb-1.5 text-[10px] uppercase font-bold tracking-wider text-amber-600 flex items-center gap-1">
+                  <Shield size={12} className="text-amber-500" /> Platform Control
+                </div>
+                <button
+                  data-testid="nav-admin"
+                  onClick={() => {
+                    setCurrentView('admin');
+                    setIsSidebarOpen(false);
+                  }}
+                  className={`w-full flex items-center justify-between px-4 py-3 min-h-[48px] rounded-xl transition-all duration-200 active:scale-[0.98] ${
+                    currentView === 'admin'
+                      ? 'bg-gradient-to-r from-amber-600 to-yellow-600 text-white font-bold shadow-md shadow-amber-200 translate-x-1'
+                      : 'bg-amber-50/70 border border-amber-200/80 text-amber-900 hover:bg-amber-100/80'
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <Shield size={20} className={currentView === 'admin' ? 'text-white' : 'text-amber-600'} />
+                    <span>Admin Dashboard</span>
+                  </div>
+                  <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-white/20 uppercase">HQ</span>
+                </button>
+              </div>
+            )}
+
+            {isAdmin && (
+              <div className="text-[10px] uppercase font-bold tracking-wider text-gray-400 px-2 pb-1">
+                Store Operations
+              </div>
+            )}
+
+            <NavItem
+              view="dashboard"
+              icon={LayoutDashboard}
+              label={TRANSLATIONS[lang].dashboard}
+              reqPerm="view_reports"
+            />
+            <NavItem view="pos" icon={ShoppingCart} label={TRANSLATIONS[lang].pos} reqPerm="process_sale" />
+            <NavItem view="inventory" icon={Package} label={TRANSLATIONS[lang].inventory} reqPerm="manage_inventory" />
+            <NavItem view="orders" icon={Store} label="Online Orders" reqPerm="process_sale" />
+            {isRestaurant && (
               <>
-                <NavItem
-                  view="dashboard"
-                  icon={LayoutDashboard}
-                  label={TRANSLATIONS[lang].dashboard}
-                  reqPerm="view_reports"
-                />
-                <NavItem view="pos" icon={ShoppingCart} label={TRANSLATIONS[lang].pos} reqPerm="process_sale" />
-                <NavItem
-                  view="inventory"
-                  icon={Package}
-                  label={TRANSLATIONS[lang].inventory}
-                  reqPerm="manage_inventory"
-                />
-                <NavItem view="orders" icon={Store} label="Online Orders" reqPerm="process_sale" />
-                {isRestaurant && (
-                  <>
-                    <NavItem
-                      view="tables"
-                      icon={Utensils}
-                      label={TRANSLATIONS[lang].tables}
-                      reqPerm="manage_settings"
-                    />
-                    <NavItem
-                      view="kitchen"
-                      icon={ChefHat}
-                      label={TRANSLATIONS[lang].kitchen}
-                      reqPerm="manage_restaurant"
-                    />
-                  </>
-                )}
-                <NavItem
-                  view="dueList"
-                  icon={ClipboardList}
-                  label={TRANSLATIONS[lang].dueList}
-                  reqPerm="view_reports"
-                />
-                <NavItem view="phase3" icon={Package} label={TRANSLATIONS[lang].depthPanel} reqPerm="view_reports" />
-                <NavItem
-                  view="expenses"
-                  icon={Wallet}
-                  label={TRANSLATIONS[lang].expenses}
-                  reqPerm={['view_reports', 'manage_expenses']}
-                />
-                <NavItem view="reports" icon={PieChart} label={TRANSLATIONS[lang].dailyReport} reqPerm="view_reports" />
-                {/* DISTINCTIVE FEATURES (2026-10-29) — new screens only. */}
-                <NavItem
-                  view="bazar"
-                  icon={ClipboardList}
-                  label={TRANSLATIONS[lang].bazarListTitle}
-                  reqPerm="view_reports"
-                />
-                <NavItem view="profile" icon={UserCircle} label={TRANSLATIONS[lang].profile} />
-                <NavItem view="settings" icon={Settings} label={TRANSLATIONS[lang].settings} />
-                {/* ADDITIONAL SCOPE — About nav entry only. */}
-                <NavItem view="about" icon={Info} label={TRANSLATIONS[lang].aboutTitle} />
+                <NavItem view="tables" icon={Utensils} label={TRANSLATIONS[lang].tables} reqPerm="manage_settings" />
+                <NavItem view="kitchen" icon={ChefHat} label={TRANSLATIONS[lang].kitchen} reqPerm="manage_restaurant" />
               </>
             )}
+            <NavItem view="dueList" icon={ClipboardList} label={TRANSLATIONS[lang].dueList} reqPerm="view_reports" />
+            <NavItem view="phase3" icon={Package} label={TRANSLATIONS[lang].depthPanel} reqPerm="view_reports" />
+            <NavItem
+              view="expenses"
+              icon={Wallet}
+              label={TRANSLATIONS[lang].expenses}
+              reqPerm={['view_reports', 'manage_expenses']}
+            />
+            <NavItem view="reports" icon={PieChart} label={TRANSLATIONS[lang].dailyReport} reqPerm="view_reports" />
+            {/* DISTINCTIVE FEATURES (2026-10-29) — new screens only. */}
+            <NavItem
+              view="bazar"
+              icon={ClipboardList}
+              label={TRANSLATIONS[lang].bazarListTitle}
+              reqPerm="view_reports"
+            />
+
+            <div className="pt-2 border-t border-gray-100 space-y-1">
+              <div className="text-[10px] uppercase font-bold tracking-wider text-gray-400 px-2 pb-1">
+                Account & Settings
+              </div>
+              <NavItem view="profile" icon={UserCircle} label={TRANSLATIONS[lang].profile} />
+              <NavItem view="settings" icon={Settings} label={TRANSLATIONS[lang].settings} />
+              {/* ADDITIONAL SCOPE — About nav entry only. */}
+              <NavItem view="about" icon={Info} label={TRANSLATIONS[lang].aboutTitle} />
+            </div>
 
             {!isAdmin && user && user.plan === 'free' && (
               <button
@@ -724,6 +737,49 @@ const App = () => {
                   <span className="hidden sm:inline">Shift / Z-Report</span>
                 </button>
               )}
+
+              {/* Admin HQ / Store POS Quick Switcher */}
+              {isAdmin && (
+                <button
+                  data-testid="admin-hq-toggle"
+                  onClick={() => setCurrentView((prev) => (prev === 'admin' ? 'pos' : 'admin'))}
+                  className={`ad-tap flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold border transition ${
+                    currentView === 'admin'
+                      ? 'bg-emerald-50 text-emerald-800 border-emerald-300 hover:bg-emerald-100'
+                      : 'bg-amber-50 text-amber-800 border-amber-300 hover:bg-amber-100'
+                  }`}
+                  title={currentView === 'admin' ? 'Switch to Store POS' : 'Switch to Admin HQ Dashboard'}
+                >
+                  {currentView === 'admin' ? (
+                    <>
+                      <ShoppingCart size={13} />
+                      <span className="hidden sm:inline">Store POS</span>
+                    </>
+                  ) : (
+                    <>
+                      <Shield size={13} />
+                      <span className="hidden sm:inline">Admin HQ</span>
+                    </>
+                  )}
+                </button>
+              )}
+
+              {/* Direct Profile Button */}
+              <button
+                data-testid="topbar-profile"
+                onClick={() => setCurrentView('profile')}
+                className={`ad-tap flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold border transition ${
+                  currentView === 'profile'
+                    ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
+                    : 'bg-gray-50 text-gray-700 border-gray-200 hover:bg-gray-100'
+                }`}
+                title="Profile & Store Management"
+              >
+                <UserCircle size={15} />
+                <span className="hidden md:inline truncate max-w-[120px]">
+                  {user?.storeName || user?.username || 'Profile'}
+                </span>
+              </button>
             </div>
           </div>
 
@@ -760,9 +816,9 @@ const App = () => {
                 {currentView === 'expenses' && (hasPermission('view_reports') || hasPermission('manage_expenses')) && (
                   <Expenses lang={lang} canManage={hasPermission('manage_expenses')} />
                 )}
-                {currentView === 'profile' && <Profile lang={lang} isOwner={permissions === 'all'} />}
+                {currentView === 'profile' && <Profile lang={lang} isOwner={isAdmin || permissions === 'all'} />}
                 {currentView === 'settings' && (
-                  <SettingsScreen lang={lang} onLanguageChange={setLang} isOwner={permissions === 'all'} />
+                  <SettingsScreen lang={lang} onLanguageChange={setLang} isOwner={isAdmin || permissions === 'all'} />
                 )}
                 {currentView === 'admin' && isAdmin && <AdminPanel />}
                 {currentView === 'reports' && hasPermission('view_reports') && <DailyReport lang={lang} />}

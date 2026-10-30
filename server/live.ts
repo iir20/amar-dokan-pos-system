@@ -107,6 +107,9 @@ function lookupSessionStoreId(req: { headers: Record<string, string | string[] |
 
 export function setupAmarLive(server: Server) {
   wss = new WebSocketServer({ server, path: '/ws' });
+  wss.on('error', (err) => {
+    console.warn('[AmarLive] WebSocket server warning:', err?.message || String(err));
+  });
 
   wss.on('connection', (ws: WebSocket, req: any) => {
     const room = 'general';

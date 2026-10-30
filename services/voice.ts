@@ -144,18 +144,29 @@ async function listenOnceNative(lang: 'bn' | 'en'): Promise<VoiceCommand> {
   return parseVoiceCommand(transcript);
 }
 
-/** Web listen-once via the Web Speech API (unchanged Phase 3 behaviour). */
-function listenOnceWeb(lang: 'bn' | 'en'): Promise<VoiceCommand> {
+/** Web listen-once via the Web Speech API with explicit mic permission pre-check. */
+async function listenOnceWeb(lang: 'bn' | 'en'): Promise<VoiceCommand> {
+  if (typeof window === 'undefined') {
+    throw new Error('UNSUPPORTED');
+  }
+  const w = window as any;
+  if (!w.SpeechRecognition && !w.webkitSpeechRecognition) {
+    throw new Error('UNSUPPORTED');
+  }
+
+  // Ensure browser microphone permission prompt is triggered cleanly if needed
+  if (navigator.mediaDevices?.getUserMedia) {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach((track) => track.stop());
+    } catch (err: any) {
+      if (err?.name === 'NotAllowedError' || err?.name === 'PermissionDeniedError') {
+        throw new Error('PERMISSION_DENIED', { cause: err });
+      }
+    }
+  }
+
   return new Promise((resolve, reject) => {
-    if (typeof window === 'undefined') {
-      reject(new Error('UNSUPPORTED'));
-      return;
-    }
-    const w = window as any;
-    if (!w.SpeechRecognition && !w.webkitSpeechRecognition) {
-      reject(new Error('UNSUPPORTED'));
-      return;
-    }
     const Rec = w.SpeechRecognition || w.webkitSpeechRecognition;
     const rec = new Rec();
     rec.lang = lang === 'bn' ? 'bn-BD' : 'en-US';
@@ -169,12 +180,16 @@ function listenOnceWeb(lang: 'bn' | 'en'): Promise<VoiceCommand> {
     };
     rec.onerror = (event: any) => {
       settled = true;
-      reject(new Error(event?.error === 'no-speech' ? 'NO_SPEECH' : 'LISTEN_ERROR'));
+      const errName = event?.error;
+      if (errName === 'not-allowed' || errName === 'service-not-allowed') {
+        reject(new Error('PERMISSION_DENIED'));
+      } else if (errName === 'no-speech') {
+        reject(new Error('NO_SPEECH'));
+      } else {
+        reject(new Error('LISTEN_ERROR'));
+      }
     };
     rec.onend = () => {
-      // Recognition can end without a result (e.g. silence with no
-      // error event): settle as NO_SPEECH so the UI falls back to text
-      // instead of hanging on a listening spinner.
       if (!settled) {
         settled = true;
         reject(new Error('NO_SPEECH'));
@@ -182,8 +197,12 @@ function listenOnceWeb(lang: 'bn' | 'en'): Promise<VoiceCommand> {
     };
     try {
       rec.start();
-    } catch {
-      reject(new Error('LISTEN_ERROR'));
+    } catch (e: any) {
+      if (e?.name === 'NotAllowedError') {
+        reject(new Error('PERMISSION_DENIED'));
+      } else {
+        reject(new Error('LISTEN_ERROR'));
+      }
     }
   });
 }

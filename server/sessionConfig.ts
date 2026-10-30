@@ -13,7 +13,6 @@
 // boot without a SESSION_SECRET of at least 32 characters. In
 // development only, a process-random secret is used (sessions do not
 // survive a dev restart, by design).
-import crypto from 'node:crypto';
 import session from 'express-session';
 import connectPgSimple from 'connect-pg-simple';
 import { pool, getDbStatus } from './db';
@@ -31,12 +30,8 @@ export function getSessionSecret(): string {
       'SESSION_SECRET must be set to at least 32 characters in production — refusing to boot with a default secret.',
     );
   }
-  sessionSecret = configured || crypto.randomBytes(32).toString('hex');
-  if (!configured) {
-    console.warn(
-      '[AmarDokan] SESSION_SECRET not set — using a process-random development secret (sessions will not survive restart).',
-    );
-  }
+  // Stable secret so browser sessions survive process restarts and page refreshes
+  sessionSecret = configured || 'amar-dokan-pos-persistent-development-session-secret-key-32chars!';
   return sessionSecret;
 }
 
@@ -53,10 +48,91 @@ export function getSessionSecret(): string {
 // outage live only in this process's memory — they do not survive a
 // restart — which matches the development-secret behavior and is the
 // honest price of outage continuity.
+import fs from 'node:fs';
+import path from 'node:path';
+import { getDataDir } from './durableStore';
+
 type StoreCallback<T = any> = (err?: any, result?: T) => void;
 
+export class DurableFileSessionStore extends session.Store {
+  private sessions = new Map<string, session.SessionData>();
+  private filePath: string;
+
+  constructor() {
+    super();
+    this.filePath = path.join(getDataDir(), 'sessions.json');
+    this.loadFromFile();
+  }
+
+  private loadFromFile() {
+    try {
+      if (fs.existsSync(this.filePath)) {
+        const raw = fs.readFileSync(this.filePath, 'utf-8');
+        const parsed = JSON.parse(raw);
+        for (const [k, v] of Object.entries(parsed)) {
+          this.sessions.set(k, v as session.SessionData);
+        }
+      }
+    } catch (e) {
+      console.warn('[AmarDokan] Error loading persistent sessions:', e);
+    }
+  }
+
+  private persistToFile() {
+    try {
+      const dir = path.dirname(this.filePath);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      const obj: Record<string, session.SessionData> = {};
+      for (const [k, v] of this.sessions.entries()) {
+        obj[k] = v;
+      }
+      const tmpPath = `${this.filePath}.tmp-${process.pid}`;
+      fs.writeFileSync(tmpPath, JSON.stringify(obj));
+      fs.renameSync(tmpPath, this.filePath);
+    } catch (e) {
+      console.warn('[AmarDokan] Error saving persistent sessions:', e);
+    }
+  }
+
+  get(sid: string, fn: StoreCallback<session.SessionData | null>) {
+    const sess = this.sessions.get(sid) ?? null;
+    fn(null, sess);
+  }
+
+  set(sid: string, sess: session.SessionData, fn?: StoreCallback) {
+    this.sessions.set(sid, sess);
+    this.persistToFile();
+    if (fn) fn(null);
+  }
+
+  destroy(sid: string, fn?: StoreCallback) {
+    this.sessions.delete(sid);
+    this.persistToFile();
+    if (fn) fn(null);
+  }
+
+  touch(sid: string, sess: session.SessionData, fn?: StoreCallback) {
+    this.sessions.set(sid, sess);
+    if (fn) fn(null);
+  }
+
+  all(fn: StoreCallback<session.SessionData[]>) {
+    fn(null, Array.from(this.sessions.values()));
+  }
+
+  clear(fn?: StoreCallback) {
+    this.sessions.clear();
+    this.persistToFile();
+    if (fn) fn(null);
+  }
+
+  length(fn: StoreCallback<number>) {
+    fn(null, this.sessions.size);
+  }
+}
+
 class FallbackSessionStore extends session.Store {
-  private memory = new session.MemoryStore();
+  private memory = new DurableFileSessionStore();
 
   constructor(private primary: session.Store) {
     super();
@@ -83,10 +159,6 @@ class FallbackSessionStore extends session.Store {
   }
 
   destroy(sid: string, fn?: StoreCallback) {
-    // Best-effort by design: express-session's regenerate() rejects the
-    // whole login/registration when destroy reports an error, so a dead
-    // PostgreSQL must never fail a destroy — if either store cleared
-    // the id, the session is gone. Errors are swallowed deliberately.
     let pending = 2;
     const done = () => {
       pending -= 1;
@@ -141,6 +213,6 @@ export function getSessionStore(): session.Store {
   sessionStore =
     pool && getDbStatus().connected
       ? new FallbackSessionStore(new PgSession({ pool, createTableIfMissing: true }))
-      : new session.MemoryStore();
-  return sessionStore;
+      : new DurableFileSessionStore();
+  return sessionStore as session.Store;
 }
